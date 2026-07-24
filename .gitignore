@@ -1,0 +1,25 @@
+# Rust
+core/target/
+**/target/
+
+# Node / Web / Vite / Desktop
+**/node_modules/
+**/dist/
+**/.env
+**/.env.local
+desktop/src-tauri/target/
+
+# Flutter / Mobile
+mobile/.dart_tool/
+mobile/build/
+mobile/.flutter-plugins-dependencies
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/ios/Pods/
+mobile/ios/Runner.xcworkspace/
+
+# OS / IDE
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
