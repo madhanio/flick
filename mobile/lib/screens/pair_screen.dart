@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../models/flick_item.dart';
+import '../services/p2p_service.dart';
 import '../theme/flick_theme.dart';
 
 class PairScreen extends StatefulWidget {
@@ -28,24 +30,140 @@ class PairScreen extends StatefulWidget {
 class _PairScreenState extends State<PairScreen> {
   final TextEditingController _codeController = TextEditingController();
 
-  void _manualPair() {
+  void _manualPair() async {
     final code = _codeController.text.trim();
-    if (code.isNotEmpty) {
-      widget.onAddPair('Remote Device', code);
-      _codeController.clear();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Paired successfully!'),
-          backgroundColor: FlickColors.accentPrimary,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    if (code.isEmpty) return;
+
+    String targetId = code;
+    if (code.contains('{')) {
+      try {
+        final Map<String, dynamic> json = jsonDecode(code);
+        targetId = json['peerId'] ?? code;
+      } catch (_) {}
     }
+
+    try {
+      final dev = await MobileP2PService().connectToPeer(targetId);
+      widget.onAddPair(dev.name, dev.id);
+      _codeController.clear();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Paired successfully with ${dev.name}!'),
+            backgroundColor: FlickColors.accentPrimary,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('⚠️ Pairing attempt sent to $targetId'),
+            backgroundColor: FlickColors.accentPrimary,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _openCameraScanner() {
+    bool hasScanned = false;
+    final MobileScannerController controller = MobileScannerController();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Container(
+        height: MediaQuery.of(sheetContext).size.height * 0.7,
+        decoration: const BoxDecoration(
+          color: FlickColors.bgSurface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: FlickColors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Scan Laptop QR Code',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: FlickColors.textPrimary,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () {
+                      controller.dispose();
+                      Navigator.of(sheetContext).pop();
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: FlickColors.borderSubtle),
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.all(16),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: MobileScanner(
+                    controller: controller,
+                    onDetect: (capture) {
+                      if (hasScanned) return;
+                      final List<Barcode> barcodes = capture.barcodes;
+                      for (final barcode in barcodes) {
+                        final String? rawValue = barcode.rawValue;
+                        if (rawValue != null && rawValue.isNotEmpty) {
+                          hasScanned = true;
+                          controller.stop();
+                          controller.dispose();
+                          Navigator.of(sheetContext).pop();
+
+                          setState(() {
+                            _codeController.text = rawValue;
+                          });
+                          _manualPair();
+                          break;
+                        }
+                      }
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final qrData = 'flick://${widget.myDeviceId}?name=${Uri.encodeComponent(widget.myDeviceName)}';
+    // Generate valid JSON ticket for laptop scanner
+    final Map<String, dynamic> ticketObj = {
+      'version': 1,
+      'peerId': widget.myDeviceId,
+      'deviceId': widget.myDeviceId,
+      'deviceName': widget.myDeviceName,
+      'createdAt': DateTime.now().millisecondsSinceEpoch,
+    };
+    final String qrData = jsonEncode(ticketObj);
 
     return Scaffold(
       backgroundColor: FlickColors.bgBase,
@@ -75,6 +193,31 @@ class _PairScreenState extends State<PairScreen> {
                 style: FlickTheme.lightTheme.textTheme.bodyMedium,
               ),
               const SizedBox(height: 24),
+
+              // Camera Scanner Button
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _openCameraScanner,
+                  icon: const Icon(Icons.qr_code_scanner, size: 22),
+                  label: const Text('📷 Open Camera Scanner'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: FlickColors.accentFlick,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    elevation: 2,
+                    textStyle: GoogleFonts.plusJakartaSans(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
 
               // QR Display Card
               Container(
@@ -126,7 +269,7 @@ class _PairScreenState extends State<PairScreen> {
                     ),
                     const SizedBox(height: 4),
                     SelectableText(
-                      'ID: ${widget.myDeviceId}',
+                      'Local Peer Ticket ID: ${widget.myDeviceId}',
                       style: FlickTheme.monoTextStyle.copyWith(
                         fontSize: 12,
                         color: FlickColors.textMuted,
@@ -156,7 +299,7 @@ class _PairScreenState extends State<PairScreen> {
                       controller: _codeController,
                       style: FlickTheme.monoTextStyle,
                       decoration: InputDecoration(
-                        hintText: 'Enter topic code or node ID...',
+                        hintText: 'Enter laptop Peer ID (e.g. flick_h5teph3x)...',
                         hintStyle: GoogleFonts.plusJakartaSans(
                           color: FlickColors.textMuted,
                           fontSize: 13,

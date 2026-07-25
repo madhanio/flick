@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/flick_item.dart';
+import '../services/p2p_service.dart';
 import '../theme/flick_theme.dart';
 import 'home_screen.dart';
 import 'incoming_screen.dart';
@@ -15,50 +16,46 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
 
-  final String myDeviceId = 'node_macbook_pro_7f8a';
-  final String myDeviceName = 'MacBook Pro M3';
+  String myDeviceId = 'dev_mobile';
+  final String myDeviceName = 'Android Mobile';
 
-  final List<PairedDevice> _pairedDevices = [
-    PairedDevice(
-      id: 'node_iphone15_2b9c',
-      name: 'Madhan\'s iPhone 15',
-      type: 'phone',
-      isOnline: true,
-      lastSeen: DateTime.now(),
-    ),
-    PairedDevice(
-      id: 'node_pixel8_9f1d',
-      name: 'Pixel 8 Pro',
-      type: 'phone',
-      isOnline: false,
-      lastSeen: DateTime.now().subtract(const Duration(hours: 3)),
-    ),
-  ];
-
+  final List<PairedDevice> _pairedDevices = [];
   final List<FlickItem> _recentFlicks = [];
   final List<FlickItem> _incomingQueue = [];
 
   @override
   void initState() {
     super.initState();
-    // Seed initial mock flicks for v0.1 UI verification
-    _incomingQueue.add(
-      FlickItem.create(
-        content: 'ghp_xK894Jklm2901aB7QzP0192837465',
-        fromDeviceId: 'node_iphone15_2b9c',
-        fromDeviceName: 'Madhan\'s iPhone 15',
-      ),
-    );
-    _incomingQueue.add(
-      FlickItem.create(
-        content: 'https://github.com/madhanio/flick',
-        fromDeviceId: 'node_iphone15_2b9c',
-        fromDeviceName: 'Madhan\'s iPhone 15',
-      ),
-    );
+
+    MobileP2PService().initialize().then((id) {
+      if (mounted) {
+        setState(() {
+          myDeviceId = id;
+        });
+      }
+    });
+
+    MobileP2PService().onMessage.listen((item) {
+      if (mounted) {
+        setState(() {
+          _incomingQueue.insert(0, item);
+        });
+      }
+    });
+
+    MobileP2PService().onPeerConnect.listen((device) {
+      if (mounted) {
+        setState(() {
+          if (!_pairedDevices.any((d) => d.id == device.id)) {
+            _pairedDevices.add(device);
+          }
+        });
+      }
+    });
   }
 
   void _handleSendFlick(String content) {
+    MobileP2PService().broadcastFlick(content);
     final newItem = FlickItem.create(
       content: content,
       fromDeviceId: myDeviceId,
@@ -85,15 +82,17 @@ class _MainShellState extends State<MainShell> {
 
   void _handleAddPair(String name, String id) {
     setState(() {
-      _pairedDevices.add(
-        PairedDevice(
-          id: id,
-          name: name,
-          type: 'phone',
-          isOnline: true,
-          lastSeen: DateTime.now(),
-        ),
-      );
+      if (!_pairedDevices.any((d) => d.id == id)) {
+        _pairedDevices.add(
+          PairedDevice(
+            id: id,
+            name: name,
+            type: 'laptop',
+            isOnline: true,
+            lastSeen: DateTime.now(),
+          ),
+        );
+      }
     });
   }
 
