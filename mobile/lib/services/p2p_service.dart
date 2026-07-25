@@ -57,9 +57,15 @@ class MobileP2PService {
       }));
     });
 
-    conn.on('data').listen((data) {
+    conn.on('data').listen((raw) {
       try {
-        final Map<String, dynamic> map = jsonDecode(data.toString());
+        Map<String, dynamic> map;
+        if (raw is Map) {
+          map = Map<String, dynamic>.from(raw);
+        } else {
+          map = jsonDecode(raw.toString());
+        }
+
         if (map['type'] == 'HANDSHAKE' || map['type'] == 'HANDSHAKE_ACK') {
           final PairedDevice dev = PairedDevice(
             id: map['peerId'] ?? conn.peer,
@@ -71,12 +77,13 @@ class MobileP2PService {
           _connectionStreamController.add(dev);
 
           if (map['type'] == 'HANDSHAKE') {
-            conn.send(jsonEncode({
+            final ack = {
               'type': 'HANDSHAKE_ACK',
               'deviceId': deviceId,
               'deviceName': deviceName,
               'peerId': myPeerId,
-            }));
+            };
+            conn.send(jsonEncode(ack));
           }
         } else if (map['type'] == 'FLICK') {
           final payload = map['payload'];

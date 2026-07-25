@@ -53,13 +53,21 @@ export class FlickP2PService {
     const setupListeners = (c: DataConnection) => {
       // Remove any existing listeners to avoid duplicate handler fires
       c.off('data');
-      c.on('data', (data: any) => {
-        if (!data) return;
+      c.on('data', (raw: any) => {
+        if (!raw) return;
+        let data = raw;
+        if (typeof raw === 'string') {
+          try {
+            data = JSON.parse(raw);
+          } catch (_) {
+            data = raw;
+          }
+        }
 
         if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
           const pairedDev: PairedDevice = {
-            deviceId: data.deviceId,
-            deviceName: data.deviceName,
+            deviceId: data.deviceId || ('dev_' + data.peerId.substring(0, 6)),
+            deviceName: data.deviceName || 'Android Mobile',
             peerId: data.peerId,
             pairedAt: Date.now(),
           };
@@ -77,6 +85,7 @@ export class FlickP2PService {
           this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
         } else if (data.type === 'FLICK') {
           const msg: FlickMessage = data.payload;
+          if (!msg) return;
           // Ignore self-reflected messages
           if (msg.fromDeviceId === this.deviceId) {
             return;
