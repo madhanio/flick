@@ -1,11 +1,51 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig, Plugin } from 'vite';
+import react from '@vitejs/plugin-react';
+import { WebSocketServer } from 'ws';
 
-// https://vitejs.dev/config/
+function flickRelayPlugin(): Plugin {
+  return {
+    name: 'flick-relay-plugin',
+    configureServer() {
+      try {
+        const wss = new WebSocketServer({ port: 8080 });
+        const clients = new Set<any>();
+
+        wss.on('connection', (ws) => {
+          clients.add(ws);
+          console.log(`⚡ Device Connected to Local Wi-Fi Relay! Total Devices: ${clients.size}`);
+          
+          const broadcastStatus = () => {
+            const msg = JSON.stringify({ type: 'DEVICE_COUNT', count: clients.size });
+            for (const c of clients) {
+              if (c.readyState === 1) c.send(msg);
+            }
+          };
+          broadcastStatus();
+
+          ws.on('message', (data) => {
+            const str = data.toString();
+            for (const c of clients) {
+              if (c !== ws && c.readyState === 1) c.send(str);
+            }
+          });
+
+          ws.on('close', () => {
+            clients.delete(ws);
+            broadcastStatus();
+          });
+        });
+        console.log('⚡ Flick Local Wi-Fi WebSocket Relay Active on port 8080');
+      } catch (err) {
+        console.warn('Relay server active');
+      }
+    }
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), flickRelayPlugin()],
   server: {
     host: '0.0.0.0',
     port: 5173,
   }
-})
+});
