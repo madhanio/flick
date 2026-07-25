@@ -12,10 +12,11 @@ function flickRelayPlugin(): Plugin {
 
         wss.on('connection', (ws) => {
           clients.add(ws);
-          console.log(`⚡ Device Connected to Local Wi-Fi Relay! Total Devices: ${clients.size}`);
           
           const broadcastStatus = () => {
-            const msg = JSON.stringify({ type: 'DEVICE_COUNT', count: clients.size });
+            // Subtract 1 for laptop's own connection so badge shows actual secondary paired devices
+            const remoteDeviceCount = Math.max(0, clients.size - 1);
+            const msg = JSON.stringify({ type: 'DEVICE_COUNT', count: remoteDeviceCount });
             for (const c of clients) {
               if (c.readyState === 1) c.send(msg);
             }
