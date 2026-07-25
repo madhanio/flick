@@ -37,6 +37,7 @@ export class FlickP2PService {
       });
 
       this.peer.on('connection', (conn) => {
+        console.log('⚡ Laptop received incoming P2P connection from:', conn.peer);
         this.handleConnection(conn);
       });
 
@@ -60,14 +61,16 @@ export class FlickP2PService {
         }
       }
 
-      if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
+      console.log('⚡ Laptop Received Data Frame:', data);
+
+      if (data && (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK')) {
         const pairedDev: PairedDevice = {
-          deviceId: data.deviceId || ('dev_' + data.peerId.substring(0, 6)),
+          deviceId: data.deviceId || ('dev_' + (data.peerId ? data.peerId.substring(0, 6) : 'mobile')),
           deviceName: data.deviceName || 'Android Mobile',
-          peerId: data.peerId,
+          peerId: data.peerId || conn.peer,
           pairedAt: Date.now(),
         };
-        this.pairedDevicesMap.set(data.peerId, pairedDev);
+        this.pairedDevicesMap.set(pairedDev.peerId, pairedDev);
 
         if (data.type === 'HANDSHAKE') {
           conn.send({
@@ -79,7 +82,7 @@ export class FlickP2PService {
         }
 
         this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
-      } else if (data.type === 'FLICK') {
+      } else if (data && data.type === 'FLICK') {
         const msg: FlickMessage = data.payload;
         if (!msg) return;
         if (msg.fromDeviceId === this.deviceId) return;
@@ -88,7 +91,6 @@ export class FlickP2PService {
       }
     };
 
-    // Attach data listener IMMEDIATELY before waiting for open event so initial payload is never missed!
     conn.off('data');
     conn.on('data', onData);
 

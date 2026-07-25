@@ -97,24 +97,33 @@ class MobileP2PService {
 
     conn.on('data').listen((raw) {
       try {
-        Map<String, dynamic> map;
+        Map<String, dynamic>? map;
         if (raw is Map) {
-          map = Map<String, dynamic>.from(raw);
-        } else {
-          map = jsonDecode(raw.toString());
+          map = raw.map((k, v) => MapEntry(k.toString(), v));
+        } else if (raw is String) {
+          try {
+            final decoded = jsonDecode(raw);
+            if (decoded is Map) {
+              map = decoded.map((k, v) => MapEntry(k.toString(), v));
+            }
+          } catch (_) {}
         }
 
-        if (map['type'] == 'HANDSHAKE' || map['type'] == 'HANDSHAKE_ACK') {
+        if (map == null) return;
+
+        final String? msgType = map['type']?.toString();
+
+        if (msgType == 'HANDSHAKE' || msgType == 'HANDSHAKE_ACK') {
           final PairedDevice dev = PairedDevice(
-            id: map['peerId'] ?? conn.peer,
-            name: map['deviceName'] ?? 'Laptop Browser',
+            id: map['peerId']?.toString() ?? conn.peer,
+            name: map['deviceName']?.toString() ?? 'Laptop Browser',
             type: 'laptop',
             isOnline: true,
             lastSeen: DateTime.now(),
           );
           _connectionStreamController.add(dev);
 
-          if (map['type'] == 'HANDSHAKE') {
+          if (msgType == 'HANDSHAKE') {
             final ackMap = {
               'type': 'HANDSHAKE_ACK',
               'deviceId': deviceId,
@@ -124,24 +133,38 @@ class MobileP2PService {
             conn.send(ackMap);
             conn.send(jsonEncode(ackMap));
           }
-        } else if (map['type'] == 'FLICK') {
+        } else if (msgType == 'FLICK') {
           final payload = map['payload'];
-          if (payload != null && payload['fromDeviceId'] != deviceId) {
-            final FlickItem item = FlickItem(
-              id: payload['id'] ?? DateTime.now().toString(),
-              content: payload['content'] ?? '',
-              preview: payload['preview'] ?? '',
-              isSensitive: payload['sensitive'] ?? false,
-              fromDeviceId: payload['fromDeviceId'] ?? '',
-              fromDeviceName: payload['fromDeviceName'] ?? 'Laptop Browser',
-              timestamp: DateTime.fromMillisecondsSinceEpoch(payload['timestamp'] ?? DateTime.now().millisecondsSinceEpoch),
-              isAccepted: false,
-            );
-            _messageStreamController.add(item);
+          if (payload != null) {
+            Map<String, dynamic> pMap = {};
+            if (payload is Map) {
+              pMap = payload.map((k, v) => MapEntry(k.toString(), v));
+            } else if (payload is String) {
+              try {
+                final d = jsonDecode(payload);
+                if (d is Map) pMap = d.map((k, v) => MapEntry(k.toString(), v));
+              } catch (_) {}
+            }
+
+            if (pMap['fromDeviceId'] != deviceId) {
+              final FlickItem item = FlickItem(
+                id: pMap['id']?.toString() ?? DateTime.now().toString(),
+                content: pMap['content']?.toString() ?? '',
+                preview: pMap['preview']?.toString() ?? '',
+                isSensitive: pMap['sensitive'] == true,
+                fromDeviceId: pMap['fromDeviceId']?.toString() ?? '',
+                fromDeviceName: pMap['fromDeviceName']?.toString() ?? 'Laptop Browser',
+                timestamp: DateTime.fromMillisecondsSinceEpoch(
+                  pMap['timestamp'] is int ? pMap['timestamp'] : DateTime.now().millisecondsSinceEpoch,
+                ),
+                isAccepted: false,
+              );
+              _messageStreamController.add(item);
+            }
           }
         }
       } catch (e) {
-        // ignore malformed JSON
+        // ignore malformed data
       }
     });
 
