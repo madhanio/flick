@@ -16,7 +16,7 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
 
-  String myDeviceId = 'dev_mobile';
+  String myPeerId = MobileP2PService().myPeerId.isNotEmpty ? MobileP2PService().myPeerId : 'Initializing...';
   final String myDeviceName = 'Android Mobile';
 
   final List<PairedDevice> _pairedDevices = [];
@@ -30,7 +30,7 @@ class _MainShellState extends State<MainShell> {
     MobileP2PService().initialize().then((id) {
       if (mounted) {
         setState(() {
-          myDeviceId = id;
+          myPeerId = id;
         });
       }
     });
@@ -58,7 +58,7 @@ class _MainShellState extends State<MainShell> {
     MobileP2PService().broadcastFlick(content);
     final newItem = FlickItem.create(
       content: content,
-      fromDeviceId: myDeviceId,
+      fromDeviceId: MobileP2PService().deviceId,
       fromDeviceName: myDeviceName,
     );
     setState(() {
@@ -116,7 +116,7 @@ class _MainShellState extends State<MainShell> {
         onDismissFlick: _handleDismissFlick,
       ),
       PairScreen(
-        myDeviceId: myDeviceId,
+        myDeviceId: myPeerId,
         myDeviceName: myDeviceName,
         pairedDevices: _pairedDevices,
         onAddPair: _handleAddPair,

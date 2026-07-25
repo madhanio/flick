@@ -50,7 +50,7 @@ export const App: React.FC = () => {
     });
 
     service.onPeerConnect((device) => {
-      setPairedDevices(service.getPairedDevices());
+      setPairedDevices([...service.getPairedDevices()]);
       setPairingStatus(`✅ Paired with ${device.deviceName}!`);
     });
   }, []);
@@ -80,15 +80,23 @@ export const App: React.FC = () => {
       setPairingStatus('Connecting...');
       let targetPeerId = manualTicket.trim();
       if (manualTicket.includes('{')) {
-        const ticket: PairingTicket = JSON.parse(manualTicket);
-        targetPeerId = ticket.peerId;
+        try {
+          const ticket = JSON.parse(manualTicket);
+          targetPeerId = ticket.peerId || targetPeerId;
+        } catch (_) {}
       }
+
+      if (!targetPeerId.startsWith('flick_')) {
+        setPairingStatus(`⚠️ Invalid Peer ID "${targetPeerId}". Enter a valid Ticket ID starting with "flick_" (e.g. flick_m_849201).`);
+        return;
+      }
+
       const dev = await p2p.connectToPeer(targetPeerId);
-      setPairedDevices(p2p.getPairedDevices());
+      setPairedDevices([...p2p.getPairedDevices()]);
       setPairingStatus(`✅ Connected to ${dev.deviceName}!`);
       setManualTicket('');
     } catch (err) {
-      setPairingStatus(`❌ Connection failed.`);
+      setPairingStatus(`❌ Connection failed. Verify device is active.`);
     }
   };
 

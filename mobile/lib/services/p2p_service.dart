@@ -47,15 +47,24 @@ class MobileP2PService {
   }
 
   void _setupConnection(DataConnection conn) {
-    conn.on('open').listen((_) {
-      _connections[conn.peer] = conn;
-      conn.send(jsonEncode({
-        'type': 'HANDSHAKE',
-        'deviceId': deviceId,
-        'deviceName': deviceName,
-        'peerId': myPeerId,
-      }));
-    });
+    _connections[conn.peer] = conn;
+
+    final Map<String, dynamic> handshakeMap = {
+      'type': 'HANDSHAKE',
+      'deviceId': deviceId,
+      'deviceName': deviceName,
+      'peerId': myPeerId,
+    };
+
+    if (conn.open) {
+      conn.send(handshakeMap);
+      conn.send(jsonEncode(handshakeMap));
+    } else {
+      conn.on('open').listen((_) {
+        conn.send(handshakeMap);
+        conn.send(jsonEncode(handshakeMap));
+      });
+    }
 
     conn.on('data').listen((raw) {
       try {
@@ -77,13 +86,14 @@ class MobileP2PService {
           _connectionStreamController.add(dev);
 
           if (map['type'] == 'HANDSHAKE') {
-            final ack = {
+            final ackMap = {
               'type': 'HANDSHAKE_ACK',
               'deviceId': deviceId,
               'deviceName': deviceName,
               'peerId': myPeerId,
             };
-            conn.send(jsonEncode(ack));
+            conn.send(ackMap);
+            conn.send(jsonEncode(ackMap));
           }
         } else if (map['type'] == 'FLICK') {
           final payload = map['payload'];
@@ -118,8 +128,9 @@ class MobileP2PService {
     final conn = _peer!.connect(cleanTargetId);
     final Completer<PairedDevice> completer = Completer<PairedDevice>();
 
+    _setupConnection(conn);
+
     conn.on('open').listen((_) {
-      _setupConnection(conn);
       final PairedDevice dev = PairedDevice(
         id: cleanTargetId,
         name: 'Laptop Browser',
@@ -161,13 +172,16 @@ class MobileP2PService {
       'status': 'sent',
     };
 
-    final String jsonStr = jsonEncode({
+    final Map<String, dynamic> flickMsg = {
       'type': 'FLICK',
       'payload': payload,
-    });
+    };
 
     for (final conn in _connections.values) {
-      conn.send(jsonStr);
+      if (conn.open) {
+        conn.send(flickMsg);
+        conn.send(jsonEncode(flickMsg));
+      }
     }
   }
 

@@ -47,78 +47,71 @@ export class FlickP2PService {
   }
 
   private handleConnection(conn: DataConnection) {
-    // Store active connection
     this.connections.set(conn.peer, conn);
 
-    const setupListeners = (c: DataConnection) => {
-      // Remove any existing listeners to avoid duplicate handler fires
-      c.off('data');
-      c.on('data', (raw: any) => {
-        if (!raw) return;
-        let data = raw;
-        if (typeof raw === 'string') {
-          try {
-            data = JSON.parse(raw);
-          } catch (_) {
-            data = raw;
-          }
+    const onData = (raw: any) => {
+      if (!raw) return;
+      let data = raw;
+      if (typeof raw === 'string') {
+        try {
+          data = JSON.parse(raw);
+        } catch (_) {
+          data = raw;
+        }
+      }
+
+      if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
+        const pairedDev: PairedDevice = {
+          deviceId: data.deviceId || ('dev_' + data.peerId.substring(0, 6)),
+          deviceName: data.deviceName || 'Android Mobile',
+          peerId: data.peerId,
+          pairedAt: Date.now(),
+        };
+        this.pairedDevicesMap.set(data.peerId, pairedDev);
+
+        if (data.type === 'HANDSHAKE') {
+          conn.send({
+            type: 'HANDSHAKE_ACK',
+            deviceId: this.deviceId,
+            deviceName: this.deviceName,
+            peerId: this.myPeerId,
+          });
         }
 
-        if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
-          const pairedDev: PairedDevice = {
-            deviceId: data.deviceId || ('dev_' + data.peerId.substring(0, 6)),
-            deviceName: data.deviceName || 'Android Mobile',
-            peerId: data.peerId,
-            pairedAt: Date.now(),
-          };
-          this.pairedDevicesMap.set(data.peerId, pairedDev);
-
-          if (data.type === 'HANDSHAKE') {
-            c.send({
-              type: 'HANDSHAKE_ACK',
-              deviceId: this.deviceId,
-              deviceName: this.deviceName,
-              peerId: this.myPeerId,
-            });
-          }
-
-          this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
-        } else if (data.type === 'FLICK') {
-          const msg: FlickMessage = data.payload;
-          if (!msg) return;
-          // Ignore self-reflected messages
-          if (msg.fromDeviceId === this.deviceId) {
-            return;
-          }
-          msg.status = 'received';
-          this.onMessageCallbacks.forEach((cb) => cb(msg));
-        }
-      });
-
-      c.on('close', () => {
-        this.connections.delete(c.peer);
-      });
+        this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
+      } else if (data.type === 'FLICK') {
+        const msg: FlickMessage = data.payload;
+        if (!msg) return;
+        if (msg.fromDeviceId === this.deviceId) return;
+        msg.status = 'received';
+        this.onMessageCallbacks.forEach((cb) => cb(msg));
+      }
     };
 
-    if (conn.open) {
+    // Attach data listener IMMEDIATELY before waiting for open event so initial payload is never missed!
+    conn.off('data');
+    conn.on('data', onData);
+
+    const sendHandshake = () => {
       conn.send({
         type: 'HANDSHAKE',
         deviceId: this.deviceId,
         deviceName: this.deviceName,
         peerId: this.myPeerId,
       });
-      setupListeners(conn);
+    };
+
+    if (conn.open) {
+      sendHandshake();
     } else {
       conn.on('open', () => {
-        conn.send({
-          type: 'HANDSHAKE',
-          deviceId: this.deviceId,
-          deviceName: this.deviceName,
-          peerId: this.myPeerId,
-        });
-        setupListeners(conn);
+        sendHandshake();
       });
     }
+
+    conn.on('close', () => {
+      this.connections.delete(conn.peer);
+    });
   }
 
   public connectToPeer(targetPeerId: string): Promise<PairedDevice> {
