@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:peerdart/peerdart.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/flick_item.dart';
 
 class MobileP2PService {
@@ -10,6 +11,7 @@ class MobileP2PService {
   MobileP2PService._internal();
 
   Peer? _peer;
+  WebSocketChannel? _wsChannel;
   String myPeerId = '';
   final String deviceId = 'dev_mobile_${Random().nextInt(900000) + 100000}';
   final String deviceName = 'Android Mobile';
@@ -24,11 +26,10 @@ class MobileP2PService {
   Future<String> initialize() async {
     if (myPeerId.isNotEmpty && _peer != null) return myPeerId;
 
-    // Generate clean flick_... Peer ID matching laptop PeerJS format
     final String randomSuffix = (Random().nextInt(900000) + 100000).toString();
     final String cleanId = 'flick_m_$randomSuffix';
-    
-    // Explicit HTTPS SSL PeerJS Server Options for Android OS Security Sandbox
+    myPeerId = cleanId;
+
     _peer = Peer(
       id: cleanId,
       options: PeerOptions(
@@ -43,36 +44,69 @@ class MobileP2PService {
 
     _peer!.on<String>('open').listen((id) {
       myPeerId = id;
-      if (!completer.isCompleted) {
-        completer.complete(id);
-      }
+      if (!completer.isCompleted) completer.complete(id);
     });
 
     _peer!.on('error').listen((err) {
-      // Fallback ID if server signaling encounters network issue
-      if (myPeerId.isEmpty) {
-        myPeerId = cleanId;
-        if (!completer.isCompleted) {
-          completer.complete(cleanId);
-        }
-      }
+      if (!completer.isCompleted) completer.complete(cleanId);
     });
 
     _peer!.on<DataConnection>('connection').listen((conn) {
       _setupConnection(conn);
     });
 
-    // Guaranteed fallback after 3 seconds so UI never hangs on 'Initializing...'
-    Future.delayed(const Duration(seconds: 3), () {
-      if (myPeerId.isEmpty) {
-        myPeerId = cleanId;
-        if (!completer.isCompleted) {
-          completer.complete(cleanId);
-        }
-      }
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!completer.isCompleted) completer.complete(cleanId);
     });
 
     return completer.future;
+  }
+
+  void connectToLocalWifiRelay(String hostIp) {
+    try {
+      final wsUrl = Uri.parse('ws://$hostIp:8080');
+      _wsChannel = WebSocketChannel.connect(wsUrl);
+
+      _wsChannel!.sink.add(jsonEncode({
+        'type': 'HANDSHAKE',
+        'deviceId': deviceId,
+        'deviceName': deviceName,
+        'peerId': myPeerId,
+      }));
+
+      final dev = PairedDevice(
+        id: 'flick_laptop_wifi',
+        name: 'Laptop Browser (Local Wi-Fi)',
+        type: 'laptop',
+        isOnline: true,
+        lastSeen: DateTime.now(),
+      );
+      _connectionStreamController.add(dev);
+
+      _wsChannel!.stream.listen((event) {
+        try {
+          final map = jsonDecode(event.toString());
+          if (map['type'] == 'FLICK') {
+            final payload = map['payload'];
+            if (payload != null && payload['fromDeviceId'] != deviceId) {
+              final FlickItem item = FlickItem(
+                id: payload['id']?.toString() ?? DateTime.now().toString(),
+                content: payload['content']?.toString() ?? '',
+                preview: payload['preview']?.toString() ?? '',
+                isSensitive: payload['sensitive'] == true,
+                fromDeviceId: payload['fromDeviceId']?.toString() ?? '',
+                fromDeviceName: payload['fromDeviceName']?.toString() ?? 'Laptop Browser',
+                timestamp: DateTime.fromMillisecondsSinceEpoch(
+                  payload['timestamp'] is int ? payload['timestamp'] : DateTime.now().millisecondsSinceEpoch,
+                ),
+                isAccepted: false,
+              );
+              _messageStreamController.add(item);
+            }
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
   }
 
   void _setupConnection(DataConnection conn) {
@@ -110,7 +144,6 @@ class MobileP2PService {
         }
 
         if (map == null) return;
-
         final String? msgType = map['type']?.toString();
 
         if (msgType == 'HANDSHAKE' || msgType == 'HANDSHAKE_ACK') {
@@ -163,9 +196,7 @@ class MobileP2PService {
             }
           }
         }
-      } catch (e) {
-        // ignore malformed data
-      }
+      } catch (_) {}
     });
 
     conn.on('close').listen((_) {
@@ -175,8 +206,21 @@ class MobileP2PService {
 
   Future<PairedDevice> connectToPeer(String targetPeerId) async {
     final String cleanTargetId = targetPeerId.trim();
-    if (_peer == null) await initialize();
 
+    // If target is IP Address (e.g., 192.168.1.9)
+    if (cleanTargetId.contains('.') || cleanTargetId.contains(':')) {
+      final String ip = cleanTargetId.split(':')[0].replaceAll('/', '').trim();
+      connectToLocalWifiRelay(ip);
+      return PairedDevice(
+        id: 'flick_laptop_wifi',
+        name: 'Laptop Browser (Local Wi-Fi)',
+        type: 'laptop',
+        isOnline: true,
+        lastSeen: DateTime.now(),
+      );
+    }
+
+    if (_peer == null) await initialize();
     final conn = _peer!.connect(cleanTargetId);
     final Completer<PairedDevice> completer = Completer<PairedDevice>();
 
@@ -190,16 +234,11 @@ class MobileP2PService {
         isOnline: true,
         lastSeen: DateTime.now(),
       );
-      if (!completer.isCompleted) {
-        completer.complete(dev);
-      }
+      if (!completer.isCompleted) completer.complete(dev);
     });
 
-    // Timeout safety
     Future.delayed(const Duration(seconds: 10), () {
-      if (!completer.isCompleted) {
-        completer.completeError('Connection timeout');
-      }
+      if (!completer.isCompleted) completer.completeError('Connection timeout');
     });
 
     return completer.future;
@@ -229,10 +268,20 @@ class MobileP2PService {
       'payload': payload,
     };
 
+    final String jsonStr = jsonEncode(flickMsg);
+
+    // Broadcast over WebSocket Relay
+    if (_wsChannel != null) {
+      try {
+        _wsChannel!.sink.add(jsonStr);
+      } catch (_) {}
+    }
+
+    // Broadcast over WebRTC Connections
     for (final conn in _connections.values) {
       if (conn.open) {
         conn.send(flickMsg);
-        conn.send(jsonEncode(flickMsg));
+        conn.send(jsonStr);
       }
     }
   }

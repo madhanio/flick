@@ -6,6 +6,7 @@ type ConnectionCallback = (device: PairedDevice) => void;
 
 export class FlickP2PService {
   private peer: Peer | null = null;
+  private ws: WebSocket | null = null;
   public myPeerId: string = '';
   public deviceId: string = '';
   public deviceName: string = '';
@@ -24,27 +25,88 @@ export class FlickP2PService {
   }
 
   public async initialize(): Promise<string> {
+    const cleanId = 'flick_' + Math.random().toString(36).substring(2, 10);
+    this.myPeerId = cleanId;
+
+    // Connect to Local Wi-Fi WebSocket Relay
+    this.connectLocalWebSocket();
+
+    // Also initialize PeerJS for P2P backup
     return new Promise((resolve) => {
-      const cleanId = 'flick_' + Math.random().toString(36).substring(2, 10);
-      this.peer = new Peer(cleanId, {
-        debug: 1,
-      });
+      try {
+        this.peer = new Peer(cleanId, { debug: 1 });
 
-      this.peer.on('open', (id) => {
-        this.myPeerId = id;
-        console.log('⚡ Flick P2P Ready! My Peer ID:', id);
-        resolve(id);
-      });
+        this.peer.on('open', (id) => {
+          this.myPeerId = id;
+          console.log('⚡ Flick Local & PeerJS P2P Ready! My Peer ID:', id);
+          resolve(id);
+        });
 
-      this.peer.on('connection', (conn) => {
-        console.log('⚡ Laptop received incoming P2P connection from:', conn.peer);
-        this.handleConnection(conn);
-      });
+        this.peer.on('connection', (conn) => {
+          console.log('⚡ Incoming P2P connection from:', conn.peer);
+          this.handleConnection(conn);
+        });
 
-      this.peer.on('error', (err) => {
-        console.warn('P2P connection warning:', err);
-      });
+        this.peer.on('error', () => {
+          resolve(cleanId);
+        });
+      } catch (_) {
+        resolve(cleanId);
+      }
     });
+  }
+
+  private connectLocalWebSocket() {
+    try {
+      const host = window.location.hostname || 'localhost';
+      const wsUrl = `ws://${host}:8080`;
+      this.ws = new WebSocket(wsUrl);
+
+      this.ws.onopen = () => {
+        console.log('⚡ Connected to Local Wi-Fi Relay Server!');
+        this.ws?.send(JSON.stringify({
+          type: 'HANDSHAKE',
+          deviceId: this.deviceId,
+          deviceName: this.deviceName,
+          peerId: this.myPeerId,
+        }));
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'DEVICE_COUNT') {
+            if (data.count > 1) {
+              const pairedDev: PairedDevice = {
+                deviceId: 'dev_mobile_wifi',
+                deviceName: 'Android Mobile (Local Wi-Fi)',
+                peerId: 'flick_m_wifi',
+                pairedAt: Date.now(),
+              };
+              this.pairedDevicesMap.set('flick_m_wifi', pairedDev);
+              this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
+            } else {
+              this.pairedDevicesMap.delete('flick_m_wifi');
+            }
+          } else if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
+            const pairedDev: PairedDevice = {
+              deviceId: data.deviceId || 'dev_mobile',
+              deviceName: data.deviceName || 'Android Mobile',
+              peerId: data.peerId || 'mobile_peer',
+              pairedAt: Date.now(),
+            };
+            this.pairedDevicesMap.set(pairedDev.peerId, pairedDev);
+            this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
+          } else if (data.type === 'FLICK') {
+            const msg: FlickMessage = data.payload;
+            if (msg && msg.fromDeviceId !== this.deviceId) {
+              msg.status = 'received';
+              this.onMessageCallbacks.forEach((cb) => cb(msg));
+            }
+          }
+        } catch (_) {}
+      };
+    } catch (_) {}
   }
 
   private handleConnection(conn: DataConnection) {
@@ -60,8 +122,6 @@ export class FlickP2PService {
           data = raw;
         }
       }
-
-      console.log('⚡ Laptop Received Data Frame:', data);
 
       if (data && (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK')) {
         const pairedDev: PairedDevice = {
@@ -158,7 +218,15 @@ export class FlickP2PService {
       status: 'sent',
     };
 
-    // Broadcast to all active open connections
+    // Broadcast over WebSocket Relay
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'FLICK',
+        payload: message,
+      }));
+    }
+
+    // Broadcast over WebRTC Connections
     this.connections.forEach((conn) => {
       if (conn.open) {
         conn.send({

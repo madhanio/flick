@@ -16,6 +16,7 @@ dependencies:
   mobile_scanner: ^5.2.0
   clipboard_watcher: ^0.3.0
   peerdart: ^0.5.6
+  web_socket_channel: ^3.0.0
 
 dependency_overrides:
   flutter_webrtc: ^0.12.4
