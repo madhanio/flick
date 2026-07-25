@@ -83,10 +83,17 @@ export class FlickP2PService {
                 peerId: 'flick_m_wifi',
                 pairedAt: Date.now(),
               };
+              this.pairedDevicesMap.clear();
               this.pairedDevicesMap.set('flick_m_wifi', pairedDev);
               this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
             } else {
               this.pairedDevicesMap.delete('flick_m_wifi');
+              this.onConnectCallbacks.forEach((cb) => cb({
+                deviceId: '',
+                deviceName: '',
+                peerId: '',
+                pairedAt: Date.now()
+              }));
             }
           } else if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
             const pairedDev: PairedDevice = {
