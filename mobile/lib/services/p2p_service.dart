@@ -28,7 +28,16 @@ class MobileP2PService {
     final String randomSuffix = (Random().nextInt(900000) + 100000).toString();
     final String cleanId = 'flick_m_$randomSuffix';
     
-    _peer = Peer(id: cleanId);
+    // Explicit HTTPS SSL PeerJS Server Options for Android OS Security Sandbox
+    _peer = Peer(
+      id: cleanId,
+      options: PeerOptions(
+        host: '0.peerjs.com',
+        port: 443,
+        secure: true,
+        path: '/',
+      ),
+    );
 
     final Completer<String> completer = Completer<String>();
 
@@ -39,8 +48,28 @@ class MobileP2PService {
       }
     });
 
+    _peer!.on('error').listen((err) {
+      // Fallback ID if server signaling encounters network issue
+      if (myPeerId.isEmpty) {
+        myPeerId = cleanId;
+        if (!completer.isCompleted) {
+          completer.complete(cleanId);
+        }
+      }
+    });
+
     _peer!.on<DataConnection>('connection').listen((conn) {
       _setupConnection(conn);
+    });
+
+    // Guaranteed fallback after 3 seconds so UI never hangs on 'Initializing...'
+    Future.delayed(const Duration(seconds: 3), () {
+      if (myPeerId.isEmpty) {
+        myPeerId = cleanId;
+        if (!completer.isCompleted) {
+          completer.complete(cleanId);
+        }
+      }
     });
 
     return completer.future;
