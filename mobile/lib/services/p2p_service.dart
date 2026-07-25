@@ -121,11 +121,9 @@ class MobileP2PService {
 
     if (conn.open) {
       conn.send(handshakeMap);
-      conn.send(jsonEncode(handshakeMap));
     } else {
       conn.on('open').listen((_) {
         conn.send(handshakeMap);
-        conn.send(jsonEncode(handshakeMap));
       });
     }
 
@@ -164,7 +162,6 @@ class MobileP2PService {
               'peerId': myPeerId,
             };
             conn.send(ackMap);
-            conn.send(jsonEncode(ackMap));
           }
         } else if (msgType == 'FLICK') {
           final payload = map['payload'];
@@ -268,20 +265,16 @@ class MobileP2PService {
       'payload': payload,
     };
 
-    final String jsonStr = jsonEncode(flickMsg);
-
-    // Broadcast over WebSocket Relay
+    // Broadcast over WebSocket Relay if active, else WebRTC
     if (_wsChannel != null) {
       try {
-        _wsChannel!.sink.add(jsonStr);
+        _wsChannel!.sink.add(jsonEncode(flickMsg));
       } catch (_) {}
-    }
-
-    // Broadcast over WebRTC Connections
-    for (final conn in _connections.values) {
-      if (conn.open) {
-        conn.send(flickMsg);
-        conn.send(jsonStr);
+    } else {
+      for (final conn in _connections.values) {
+        if (conn.open) {
+          conn.send(flickMsg);
+        }
       }
     }
   }
