@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   clipboard_watcher
+  flutter_secure_storage_windows
   flutter_webrtc
 )
 

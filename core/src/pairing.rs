@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use iroh_gossip::proto::TopicId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -38,6 +39,11 @@ impl FlickKeypair {
         self.signing_key.to_bytes()
     }
 
+    /// Derive TopicId from Ed25519 public key bytes
+    pub fn topic_id(&self) -> TopicId {
+        TopicId::from_bytes(self.public_key().to_bytes())
+    }
+
     /// Sign arbitrary bytes with this keypair
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
@@ -66,7 +72,9 @@ impl FlickKeypair {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingTicket {
     pub version: u32,
+    pub topic_id: String,
     pub topic_seed_hex: String,
+    pub endpoint_id: String,
     pub device_id: String,
     pub device_name: String,
     pub public_key_hex: String,
@@ -76,14 +84,18 @@ pub struct PairingTicket {
 impl PairingTicket {
     pub fn new(
         topic_seed: &[u8; 32],
+        endpoint_id: String,
         device_id: String,
         device_name: String,
         public_key_hex: String,
         relay_hint: Option<String>,
     ) -> Self {
+        let topic_id = hex::encode(topic_seed);
         Self {
             version: 1,
-            topic_seed_hex: hex::encode(topic_seed),
+            topic_id: topic_id.clone(),
+            topic_seed_hex: topic_id,
+            endpoint_id,
             device_id,
             device_name,
             public_key_hex,
@@ -187,6 +199,7 @@ mod tests {
         let topic_seed = [7u8; 32];
         let ticket = PairingTicket::new(
             &topic_seed,
+            "node_12345".to_string(),
             "dev_macbook".to_string(),
             "MacBook Pro".to_string(),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
@@ -198,6 +211,8 @@ mod tests {
 
         assert_eq!(parsed_ticket.device_id, "dev_macbook");
         assert_eq!(parsed_ticket.device_name, "MacBook Pro");
+        assert_eq!(parsed_ticket.endpoint_id, "node_12345");
         assert_eq!(parsed_ticket.get_topic_seed().unwrap(), topic_seed);
     }
 }
+

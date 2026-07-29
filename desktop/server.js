@@ -32,13 +32,10 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (data) => {
     const messageStr = data.toString();
-    console.log(`⚡ Relaying P2P Flick payload to ${clients.size - 1} devices...`);
-
-    // Relay data to all other connected devices
-    for (const client of clients) {
-      if (client !== ws && client.readyState === 1) {
-        client.send(messageStr);
-      }
+    const recipients = [...clients].filter((c) => c !== ws && c.readyState === 1);
+    console.log(`[relay] client count: ${clients.size}, forwarding to ${recipients.length} clients`);
+    for (const client of recipients) {
+      client.send(messageStr);
     }
   });
 
@@ -55,7 +52,7 @@ function broadcastStatus() {
     count: clients.size,
   });
   for (const client of clients) {
-    if (client.readyState === 1) {
+    if (client !== ws && client.readyState === 1) {
       client.send(statusMsg);
     }
   }

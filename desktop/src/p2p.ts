@@ -3,6 +3,7 @@ import { FlickMessage, PairedDevice, PairingTicket } from './types';
 
 type MessageCallback = (msg: FlickMessage) => void;
 type ConnectionCallback = (device: PairedDevice) => void;
+type ServerInfoCallback = (ip: string, port: number) => void;
 
 export class FlickP2PService {
   private peer: Peer | null = null;
@@ -10,10 +11,13 @@ export class FlickP2PService {
   public myPeerId: string = '';
   public deviceId: string = '';
   public deviceName: string = '';
+  public relayIp: string = '';
+  public relayPort: number = 8080;
   private connections: Map<string, DataConnection> = new Map();
   private pairedDevicesMap: Map<string, PairedDevice> = new Map();
   private onMessageCallbacks: MessageCallback[] = [];
   private onConnectCallbacks: ConnectionCallback[] = [];
+  private onServerInfoCallbacks: ServerInfoCallback[] = [];
 
   constructor(deviceName?: string) {
     this.deviceId = 'dev_' + Math.random().toString(36).substring(2, 9);
@@ -56,9 +60,9 @@ export class FlickP2PService {
     });
   }
 
-  private connectLocalWebSocket() {
+  public connectLocalWebSocket(customHost?: string) {
     try {
-      const host = window.location.hostname || 'localhost';
+      const host = customHost || window.location.hostname || 'localhost';
       const wsUrl = `ws://${host}:8080`;
       this.ws = new WebSocket(wsUrl);
 
@@ -75,27 +79,55 @@ export class FlickP2PService {
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === 'DEVICE_COUNT') {
-            if (data.count > 1) {
-              const pairedDev: PairedDevice = {
-                deviceId: 'dev_mobile_wifi',
-                deviceName: 'Android Mobile (Local Wi-Fi)',
-                peerId: 'flick_m_wifi',
-                pairedAt: Date.now(),
-              };
-              this.pairedDevicesMap.set('flick_m_wifi', pairedDev);
-              this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
-            }
+          if (data.type === 'SERVER_INFO') {
+            this.relayIp = data.ip || '';
+            this.relayPort = data.port || 8080;
+            this.onServerInfoCallbacks.forEach((cb) => cb(this.relayIp, this.relayPort));
           } else if (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK') {
+            const incomingDeviceId = data.deviceId;
+            const incomingPeerId = data.peerId;
+
+            // Rule 2: Filter self from pairedDevicesMap (including Laptop Browser self-echo)
+            if (!incomingDeviceId || incomingDeviceId === this.deviceId || incomingPeerId === this.myPeerId || data.deviceName === 'Laptop Browser') return;
+
+            // Rule 1: Disable PeerJS ONLY after the FIRST valid remote handshake is received over WebSocket
+            if (this.peer) {
+              console.log('⚡ Active remote peer on WebSocket relay. Disabling PeerJS.');
+              this.peer.destroy();
+              this.peer = null;
+              this.connections.forEach((conn) => conn.close());
+              this.connections.clear();
+            }
+
             const pairedDev: PairedDevice = {
-              deviceId: data.deviceId || 'dev_mobile',
+              deviceId: incomingDeviceId,
               deviceName: data.deviceName || 'Android Mobile',
-              peerId: data.peerId || 'mobile_peer',
+              peerId: incomingPeerId || 'mobile_peer',
               pairedAt: Date.now(),
             };
-            this.pairedDevicesMap.set(pairedDev.peerId, pairedDev);
+
+            // Rule 3: Single canonical entry per device (key by deviceId)
+            const existing = this.pairedDevicesMap.get(incomingDeviceId);
+            if (existing) {
+              existing.deviceName = pairedDev.deviceName;
+              existing.peerId = pairedDev.peerId;
+              existing.pairedAt = pairedDev.pairedAt;
+            } else {
+              this.pairedDevicesMap.set(incomingDeviceId, pairedDev);
+            }
+
+            if (data.type === 'HANDSHAKE') {
+              this.ws?.send(JSON.stringify({
+                type: 'HANDSHAKE_ACK',
+                deviceId: this.deviceId,
+                deviceName: this.deviceName,
+                peerId: this.myPeerId,
+              }));
+            }
+
             this.onConnectCallbacks.forEach((cb) => cb(pairedDev));
           } else if (data.type === 'FLICK') {
+            if (data.senderId === this.deviceId) return;
             const msg: FlickMessage = data.payload;
             if (msg && msg.fromDeviceId !== this.deviceId) {
               msg.status = 'received';
@@ -103,6 +135,17 @@ export class FlickP2PService {
             }
           }
         } catch (_) {}
+      };
+
+      // Rule 4: Clean up on WebSocket disconnect
+      this.ws.onclose = () => {
+        console.log('⚡ WebSocket Relay disconnected');
+        this.pairedDevicesMap.clear();
+        this.onConnectCallbacks.forEach((cb) => cb({ deviceId: '', deviceName: '', peerId: '', pairedAt: 0 }));
+      };
+
+      this.ws.onerror = () => {
+        console.log('⚡ WebSocket Relay error');
       };
     } catch (_) {}
   }
@@ -122,13 +165,28 @@ export class FlickP2PService {
       }
 
       if (data && (data.type === 'HANDSHAKE' || data.type === 'HANDSHAKE_ACK')) {
+        const incomingDeviceId = data.deviceId;
+        const incomingPeerId = data.peerId || conn.peer;
+
+        // Rule 2: Filter self from pairedDevicesMap
+        if (!incomingDeviceId || incomingDeviceId === this.deviceId || incomingPeerId === this.myPeerId || data.deviceName === 'Laptop Browser') return;
+
         const pairedDev: PairedDevice = {
-          deviceId: data.deviceId || ('dev_' + (data.peerId ? data.peerId.substring(0, 6) : 'mobile')),
+          deviceId: incomingDeviceId,
           deviceName: data.deviceName || 'Android Mobile',
-          peerId: data.peerId || conn.peer,
+          peerId: incomingPeerId,
           pairedAt: Date.now(),
         };
-        this.pairedDevicesMap.set(pairedDev.peerId, pairedDev);
+
+        // Rule 3: Single canonical entry per device (key by deviceId)
+        const existing = this.pairedDevicesMap.get(incomingDeviceId);
+        if (existing) {
+          existing.deviceName = pairedDev.deviceName;
+          existing.peerId = pairedDev.peerId;
+          existing.pairedAt = pairedDev.pairedAt;
+        } else {
+          this.pairedDevicesMap.set(incomingDeviceId, pairedDev);
+        }
 
         if (data.type === 'HANDSHAKE') {
           conn.send({
@@ -169,8 +227,16 @@ export class FlickP2PService {
       });
     }
 
+    // Rule 4: Clean up on WebRTC connection close
     conn.on('close', () => {
       this.connections.delete(conn.peer);
+      for (const [devId, dev] of this.pairedDevicesMap.entries()) {
+        if (dev.peerId === conn.peer) {
+          this.pairedDevicesMap.delete(devId);
+          break;
+        }
+      }
+      this.onConnectCallbacks.forEach((cb) => cb({ deviceId: '', deviceName: '', peerId: '', pairedAt: 0 }));
     });
   }
 
@@ -185,11 +251,12 @@ export class FlickP2PService {
         this.handleConnection(conn);
         const dev: PairedDevice = {
           deviceId: 'dev_' + cleanTargetId.substring(0, 6),
-          deviceName: 'Paired Device',
+          deviceName: 'Android Mobile',
           peerId: cleanTargetId,
           pairedAt: Date.now(),
         };
-        this.pairedDevicesMap.set(cleanTargetId, dev);
+        // Rule 3: Single canonical entry per device
+        this.pairedDevicesMap.set(dev.deviceId, dev);
         resolve(dev);
       });
 
@@ -216,10 +283,12 @@ export class FlickP2PService {
       status: 'sent',
     };
 
-    // Broadcast over WebSocket Relay if connected, else WebRTC
+    // Rule 5: broadcastFlick transport priority
+    // Send ONLY via WebSocket Relay if connected, else fall back to WebRTC
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         type: 'FLICK',
+        senderId: this.deviceId,
         payload: message,
       }));
     } else {
@@ -236,9 +305,24 @@ export class FlickP2PService {
     return message;
   }
 
+  public connectToRelayIp(ip: string): Promise<PairedDevice> {
+    return new Promise((resolve) => {
+      this.connectLocalWebSocket(ip);
+      const dev: PairedDevice = {
+        deviceId: 'dev_' + ip.replaceAll('.', '_'),
+        deviceName: 'Android Mobile (Local Wi-Fi)',
+        peerId: 'mobile_wifi',
+        pairedAt: Date.now(),
+      };
+      resolve(dev);
+    });
+  }
+
   public createPairingTicket(): PairingTicket {
     return {
       version: 1,
+      ip: this.relayIp || (typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'),
+      port: this.relayPort || 8080,
       peerId: this.myPeerId,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
@@ -256,6 +340,13 @@ export class FlickP2PService {
 
   public onPeerConnect(cb: ConnectionCallback) {
     this.onConnectCallbacks.push(cb);
+  }
+
+  public onServerInfo(cb: ServerInfoCallback) {
+    this.onServerInfoCallbacks.push(cb);
+    if (this.relayIp) {
+      cb(this.relayIp, this.relayPort);
+    }
   }
 
   private detectSensitive(text: string): boolean {

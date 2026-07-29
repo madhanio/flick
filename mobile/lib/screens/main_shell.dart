@@ -1,6 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/flick_item.dart';
-import '../services/p2p_service.dart';
+import '../services/bridge_service.dart';
 import '../theme/flick_theme.dart';
 import 'home_screen.dart';
 import 'incoming_screen.dart';
@@ -16,49 +17,78 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
 
-  String myPeerId = MobileP2PService().myPeerId.isNotEmpty ? MobileP2PService().myPeerId : 'Initializing...';
-  final String myDeviceName = 'Android Mobile';
+  String myPeerId = BridgeService.nodeId ?? 'Initializing...';
+  final String myDeviceName = BridgeService.deviceName;
 
-  final List<PairedDevice> _pairedDevices = [];
-  final List<FlickItem> _recentFlicks = [];
-  final List<FlickItem> _incomingQueue = [];
+  final List<PairedDevice> _pairedDevices = [
+    PairedDevice(
+      id: 'dev_macbook_pro',
+      name: 'MacBook Pro 16"',
+      type: 'laptop',
+      isOnline: true,
+      lastSeen: DateTime.now(),
+    ),
+    PairedDevice(
+      id: 'dev_linux_workstation',
+      name: 'Ubuntu Workstation',
+      type: 'laptop',
+      isOnline: false,
+      lastSeen: DateTime.now().subtract(const Duration(minutes: 42)),
+    ),
+  ];
+
+  final List<FlickItem> _recentFlicks = [
+    FlickItem.create(
+      content: 'https://github.com/madhanio/flick',
+      fromDeviceId: 'dev_macbook_pro',
+      fromDeviceName: 'MacBook Pro 16"',
+    ),
+    FlickItem.create(
+      content: 'cargo build --release --target x86_64-pc-windows-msvc',
+      fromDeviceId: 'dev_linux_workstation',
+      fromDeviceName: 'Ubuntu Workstation',
+    ),
+  ];
+
+  final List<FlickItem> _incomingQueue = [
+    FlickItem.create(
+      content: 'ghp_K91A78z902B1c456209LkpQx719Mno981AaZ',
+      fromDeviceId: 'dev_macbook_pro',
+      fromDeviceName: 'MacBook Pro 16"',
+      isSensitive: true,
+    ),
+  ];
 
   @override
   void initState() {
     super.initState();
 
-    MobileP2PService().initialize().then((id) {
+    BridgeService.initialize().then((_) {
       if (mounted) {
         setState(() {
-          myPeerId = id;
+          myPeerId = BridgeService.nodeId ?? BridgeService.deviceId ?? 'Ready';
         });
       }
     });
 
-    MobileP2PService().onMessage.listen((item) {
+    BridgeService.incomingStream().listen((jsonStr) {
       if (mounted) {
-        setState(() {
-          _incomingQueue.insert(0, item);
-        });
-      }
-    });
-
-    MobileP2PService().onPeerConnect.listen((device) {
-      if (mounted) {
-        setState(() {
-          if (!_pairedDevices.any((d) => d.id == device.id)) {
-            _pairedDevices.add(device);
-          }
-        });
+        try {
+          final Map<String, dynamic> json = jsonDecode(jsonStr);
+          final item = FlickItem.fromJson(json);
+          setState(() {
+            _incomingQueue.insert(0, item);
+          });
+        } catch (_) {}
       }
     });
   }
 
   void _handleSendFlick(String content) {
-    MobileP2PService().broadcastFlick(content);
+    BridgeService.send(content);
     final newItem = FlickItem.create(
       content: content,
-      fromDeviceId: MobileP2PService().deviceId,
+      fromDeviceId: BridgeService.deviceId ?? 'mobile',
       fromDeviceName: myDeviceName,
     );
     setState(() {

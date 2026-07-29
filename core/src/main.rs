@@ -1,11 +1,11 @@
 use anyhow::Result;
-use flick_core::{ClipboardPayload, DeviceTrustStore, EncryptedPayload, FlickGossipNode, FlickKeypair, PairingTicket};
+use flick_core::{ClipboardPayload, DeviceTrustStore, EncryptedPayload, FlickGossipNode, FlickKeypair, PairedDevice, PairingTicket};
 use futures_lite::StreamExt;
 use iroh::net::{Endpoint, NodeAddr, NodeId};
 use iroh_gossip::net::{Gossip, GossipEvent};
 use std::env;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{self, AsyncBufReadExt};
 
 #[tokio::main]
@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 
     // Generate local Ed25519 identity keypair
     let keypair = FlickKeypair::generate();
-    let trust_store = DeviceTrustStore::new();
+    let trust_store = Arc::new(Mutex::new(DeviceTrustStore::new()));
 
     let endpoint = Endpoint::builder()
         .alpns(vec![b"/iroh-gossip/0".to_vec()])
@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
     // Create pairing QR code ticket
     let ticket = PairingTicket::new(
         &topic_seed,
+        my_addr.node_id.to_string(),
         device_id.clone(),
         device_name.clone(),
         keypair.public_key_hex(),
@@ -74,21 +75,11 @@ async fn main() -> Result<()> {
         if let Ok(peer_id) = NodeId::from_str(peer_str) {
             println!("\n🤝 Bootstrapping connection to peer ID: {}", peer_id);
 
-            let relay_candidates = [
-                peer_relay_arg.cloned(),
-                my_addr.relay_url().map(|r| r.to_string()),
-                Some("https://aps1-1.relay.iroh.network./".to_string()),
-                Some("https://use1-1.relay.iroh.network./".to_string()),
-                Some("https://euw1-1.relay.iroh.network./".to_string()),
-            ];
-
-            for candidate in relay_candidates.into_iter().flatten() {
-                if let Ok(relay_url) = candidate.parse() {
-                    let peer_addr = NodeAddr::from_parts(peer_id, Some(relay_url), vec![]);
-                    let _ = endpoint.add_node_addr(peer_addr);
-                }
+            let relay_str = peer_relay_arg.cloned().unwrap_or_else(|| "https://use1-1.relay.iroh.network./".to_string());
+            if let Ok(relay_url) = relay_str.parse() {
+                let peer_addr = NodeAddr::from_parts(peer_id, Some(relay_url), vec![]);
+                let _ = endpoint.add_node_addr(peer_addr);
             }
-
             bootstrap_peers.push(peer_id);
         }
     }
@@ -104,7 +95,22 @@ async fn main() -> Result<()> {
         while let Some(Ok(event)) = receiver.next().await {
             if let iroh_gossip::net::Event::Gossip(GossipEvent::Received(msg)) = event {
                 if let Ok(encrypted_payload) = serde_json::from_slice::<EncryptedPayload>(&msg.content) {
-                    match encrypted_payload.decrypt_and_verify(&keypair_clone, &trust_store_clone, &topic_seed) {
+                    {
+                        let mut ts = trust_store_clone.lock().unwrap();
+                        if !ts.is_trusted(&encrypted_payload.sender_device_id) {
+                            ts.trusted_devices.insert(
+                                encrypted_payload.sender_device_id.clone(),
+                                PairedDevice {
+                                    device_id: encrypted_payload.sender_device_id.clone(),
+                                    device_name: encrypted_payload.sender_device_name.clone(),
+                                    public_key_hex: encrypted_payload.sender_public_key_hex.clone(),
+                                    paired_at: chrono::Utc::now().timestamp(),
+                                },
+                            );
+                        }
+                    }
+                    let ts = trust_store_clone.lock().unwrap();
+                    match encrypted_payload.decrypt_and_verify(&keypair_clone, &ts, &topic_seed) {
                         Ok(payload) => {
                             println!("\n📥 [INCOMING FLICK from {}]:", payload.from_device_name);
                             if payload.sensitive {
@@ -113,7 +119,7 @@ async fn main() -> Result<()> {
                             } else {
                                 println!("   📋 Content: {}", payload.content);
                             }
-                            println!("   ⏰ Time: {}", payload.timestamp);
+                            println!("   ⏰ Time: {}", payload.ts);
                             print!("> ");
                             use std::io::Write;
                             std::io::stdout().flush().ok();

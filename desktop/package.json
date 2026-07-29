@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "tauri": "tauri",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
@@ -19,6 +20,7 @@
     "ws": "^8.21.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^4.2.1",

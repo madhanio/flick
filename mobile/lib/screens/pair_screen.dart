@@ -30,20 +30,45 @@ class PairScreen extends StatefulWidget {
 class _PairScreenState extends State<PairScreen> {
   final TextEditingController _codeController = TextEditingController();
 
+  String get _qrPayload {
+    final Map<String, dynamic> ticketObj = {
+      'version': 1,
+      'peerId': widget.myDeviceId,
+      'deviceId': widget.myDeviceId,
+      'deviceName': widget.myDeviceName,
+      'createdAt': DateTime.now().millisecondsSinceEpoch,
+    };
+    return jsonEncode(ticketObj);
+  }
+
   void _manualPair() async {
     final code = _codeController.text.trim();
     if (code.isEmpty) return;
 
+    String? targetIp;
+    int targetPort = 8080;
     String targetId = code;
+
     if (code.contains('{')) {
       try {
         final Map<String, dynamic> json = jsonDecode(code);
-        targetId = json['peerId'] ?? code;
+        targetIp = json['ip']?.toString();
+        if (json['port'] != null) {
+          targetPort = int.tryParse(json['port'].toString()) ?? 8080;
+        }
+        targetId = json['peerId']?.toString() ?? code;
       } catch (_) {}
+    } else if (code.contains('.') || code.contains(':')) {
+      targetIp = code.split(':')[0].replaceAll('/', '').trim();
     }
 
     try {
-      final dev = await MobileP2PService().connectToPeer(targetId);
+      final PairedDevice dev;
+      if (targetIp != null && targetIp.isNotEmpty) {
+        dev = MobileP2PService().connectToLocalWifiRelay(targetIp, port: targetPort);
+      } else {
+        dev = await MobileP2PService().connectToPeer(targetId);
+      }
       widget.onAddPair(dev.name, dev.id);
       _codeController.clear();
       if (mounted) {
@@ -59,7 +84,7 @@ class _PairScreenState extends State<PairScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('⚠️ Pairing attempt sent to $targetId'),
+            content: Text('⚠️ Pairing attempt sent to ${targetIp ?? targetId}'),
             backgroundColor: FlickColors.accentPrimary,
             behavior: SnackBarBehavior.floating,
           ),
@@ -135,6 +160,28 @@ class _PairScreenState extends State<PairScreen> {
                           controller.dispose();
                           Navigator.of(sheetContext).pop();
 
+                          try {
+                            final Map<String, dynamic> json = jsonDecode(rawValue);
+                            if (json['ip'] != null && json['ip'].toString().isNotEmpty) {
+                              final String ip = json['ip'].toString();
+                              final int port = int.tryParse(json['port']?.toString() ?? '8080') ?? 8080;
+
+                              final dev = MobileP2PService().connectToLocalWifiRelay(ip, port: port);
+                              widget.onAddPair(dev.name, dev.id);
+
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('✅ Connecting to laptop at $ip...'),
+                                    backgroundColor: FlickColors.accentPrimary,
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                              }
+                              break;
+                            }
+                          } catch (_) {}
+
                           setState(() {
                             _codeController.text = rawValue;
                           });
@@ -155,16 +202,6 @@ class _PairScreenState extends State<PairScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Generate valid JSON ticket for laptop scanner
-    final Map<String, dynamic> ticketObj = {
-      'version': 1,
-      'peerId': widget.myDeviceId,
-      'deviceId': widget.myDeviceId,
-      'deviceName': widget.myDeviceName,
-      'createdAt': DateTime.now().millisecondsSinceEpoch,
-    };
-    final String qrData = jsonEncode(ticketObj);
-
     return Scaffold(
       backgroundColor: FlickColors.bgBase,
       body: SafeArea(
@@ -245,7 +282,7 @@ class _PairScreenState extends State<PairScreen> {
                         border: Border.all(color: FlickColors.borderSubtle),
                       ),
                       child: QrImageView(
-                        data: qrData,
+                        data: _qrPayload,
                         version: QrVersions.auto,
                         size: 180.0,
                         eyeStyle: const QrEyeStyle(

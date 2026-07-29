@@ -18,6 +18,8 @@ export interface PairedDevice {
 
 export interface PairingTicket {
   version: number;
+  ip?: string;
+  port?: number;
   peerId: string;
   deviceId: string;
   deviceName: string;

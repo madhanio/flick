@@ -17,11 +17,15 @@ class MobileP2PService {
   final String deviceName = 'Android Mobile';
 
   final Map<String, DataConnection> _connections = {};
+  final Map<String, PairedDevice> _pairedDevicesMap = {};
   final StreamController<FlickItem> _messageStreamController = StreamController<FlickItem>.broadcast();
   final StreamController<PairedDevice> _connectionStreamController = StreamController<PairedDevice>.broadcast();
+  final StreamController<void> _disconnectStreamController = StreamController<void>.broadcast();
 
   Stream<FlickItem> get onMessage => _messageStreamController.stream;
   Stream<PairedDevice> get onPeerConnect => _connectionStreamController.stream;
+  Stream<void> get onPeerDisconnect => _disconnectStreamController.stream;
+  List<PairedDevice> get pairedDevices => _pairedDevicesMap.values.toList();
 
   Future<String> initialize() async {
     if (myPeerId.isNotEmpty && _peer != null) return myPeerId;
@@ -62,9 +66,9 @@ class MobileP2PService {
     return completer.future;
   }
 
-  void connectToLocalWifiRelay(String hostIp) {
+  PairedDevice connectToLocalWifiRelay(String hostIp, {int port = 8080}) {
     try {
-      final wsUrl = Uri.parse('ws://$hostIp:8080');
+      final wsUrl = Uri.parse('ws://$hostIp:$port');
       _wsChannel = WebSocketChannel.connect(wsUrl);
 
       _wsChannel!.sink.add(jsonEncode({
@@ -74,19 +78,49 @@ class MobileP2PService {
         'peerId': myPeerId,
       }));
 
-      final dev = PairedDevice(
-        id: 'flick_laptop_wifi',
-        name: 'Laptop Browser (Local Wi-Fi)',
-        type: 'laptop',
-        isOnline: true,
-        lastSeen: DateTime.now(),
-      );
-      _connectionStreamController.add(dev);
-
       _wsChannel!.stream.listen((event) {
         try {
           final map = jsonDecode(event.toString());
-          if (map['type'] == 'FLICK') {
+          if (map is! Map) return;
+
+          final String? msgType = map['type']?.toString();
+          if (msgType == 'HANDSHAKE' || msgType == 'HANDSHAKE_ACK') {
+            final String? incomingDeviceId = map['deviceId']?.toString();
+            final String? incomingPeerId = map['peerId']?.toString();
+
+            // Rule 2: Filter self from pairedDevicesMap
+            if (incomingDeviceId == null || incomingDeviceId == deviceId || incomingPeerId == myPeerId) return;
+
+            // Rule 1: Disable PeerJS ONLY after the FIRST valid remote handshake is received over WebSocket
+            if (_peer != null) {
+              _peer?.dispose();
+              _peer = null;
+              _connections.clear();
+            }
+
+            final PairedDevice dev = PairedDevice(
+              id: incomingDeviceId,
+              name: map['deviceName']?.toString() ?? 'Laptop Browser',
+              type: 'laptop',
+              isOnline: true,
+              lastSeen: DateTime.now(),
+            );
+
+            // Rule 3: Single canonical entry per device (upsert by device name / type)
+            _pairedDevicesMap.removeWhere((_, existing) => existing.name == dev.name || existing.type == 'laptop');
+            _pairedDevicesMap[incomingDeviceId] = dev;
+
+            if (msgType == 'HANDSHAKE') {
+              _wsChannel!.sink.add(jsonEncode({
+                'type': 'HANDSHAKE_ACK',
+                'deviceId': deviceId,
+                'deviceName': deviceName,
+                'peerId': myPeerId,
+              }));
+            }
+
+            _connectionStreamController.add(dev);
+          } else if (msgType == 'FLICK') {
             final payload = map['payload'];
             if (payload != null && payload['fromDeviceId'] != deviceId) {
               final FlickItem item = FlickItem(
@@ -105,8 +139,26 @@ class MobileP2PService {
             }
           }
         } catch (_) {}
+      }, onDone: () {
+        // Rule 4: Clean up on WebSocket disconnect
+        _wsChannel = null;
+        _pairedDevicesMap.clear();
+        _disconnectStreamController.add(null);
+      }, onError: (_) {
+        _wsChannel = null;
+        _pairedDevicesMap.clear();
+        _disconnectStreamController.add(null);
       });
     } catch (_) {}
+
+    final dev = PairedDevice(
+      id: 'dev_laptop_wifi',
+      name: 'Laptop Browser (Local Wi-Fi)',
+      type: 'laptop',
+      isOnline: true,
+      lastSeen: DateTime.now(),
+    );
+    return dev;
   }
 
   void _setupConnection(DataConnection conn) {
@@ -127,6 +179,8 @@ class MobileP2PService {
       });
     }
 
+    String? peerDeviceId;
+
     conn.on('data').listen((raw) {
       try {
         Map<String, dynamic>? map;
@@ -145,13 +199,25 @@ class MobileP2PService {
         final String? msgType = map['type']?.toString();
 
         if (msgType == 'HANDSHAKE' || msgType == 'HANDSHAKE_ACK') {
+          final String? incomingDeviceId = map['deviceId']?.toString();
+          final String? incomingPeerId = map['peerId']?.toString() ?? conn.peer;
+
+          // Rule 2: Filter self from pairedDevicesMap
+          if (incomingDeviceId == null || incomingDeviceId == deviceId || incomingPeerId == myPeerId) return;
+
+          peerDeviceId = incomingDeviceId;
+
           final PairedDevice dev = PairedDevice(
-            id: map['peerId']?.toString() ?? conn.peer,
+            id: incomingDeviceId,
             name: map['deviceName']?.toString() ?? 'Laptop Browser',
             type: 'laptop',
             isOnline: true,
             lastSeen: DateTime.now(),
           );
+
+          // Rule 3: Single canonical entry per device (upsert by device name / type)
+          _pairedDevicesMap.removeWhere((_, existing) => existing.name == dev.name || existing.type == 'laptop');
+          _pairedDevicesMap[incomingDeviceId] = dev;
           _connectionStreamController.add(dev);
 
           if (msgType == 'HANDSHAKE') {
@@ -196,8 +262,13 @@ class MobileP2PService {
       } catch (_) {}
     });
 
+    // Rule 4: Clean up on WebRTC connection close
     conn.on('close').listen((_) {
       _connections.remove(conn.peer);
+      if (peerDeviceId != null) {
+        _pairedDevicesMap.remove(peerDeviceId);
+      }
+      _disconnectStreamController.add(null);
     });
   }
 
@@ -209,7 +280,7 @@ class MobileP2PService {
       final String ip = cleanTargetId.split(':')[0].replaceAll('/', '').trim();
       connectToLocalWifiRelay(ip);
       return PairedDevice(
-        id: 'flick_laptop_wifi',
+        id: 'dev_laptop_wifi',
         name: 'Laptop Browser (Local Wi-Fi)',
         type: 'laptop',
         isOnline: true,
@@ -225,7 +296,7 @@ class MobileP2PService {
 
     conn.on('open').listen((_) {
       final PairedDevice dev = PairedDevice(
-        id: cleanTargetId,
+        id: 'dev_' + cleanTargetId.replaceAll('flick_', ''),
         name: 'Laptop Browser',
         type: 'laptop',
         isOnline: true,
@@ -265,7 +336,8 @@ class MobileP2PService {
       'payload': payload,
     };
 
-    // Broadcast over WebSocket Relay if active, else WebRTC
+    // Rule 5: broadcastFlick transport priority
+    // Send ONLY over WebSocket Relay if active, else fall back to WebRTC
     if (_wsChannel != null) {
       try {
         _wsChannel!.sink.add(jsonEncode(flickMsg));

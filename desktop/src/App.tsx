@@ -1,437 +1,526 @@
 import React, { useState, useEffect } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
-import { Html5QrcodeScanner } from 'html5-qrcode';
 import {
   Zap,
-  QrCode,
   Smartphone,
   Laptop,
   Copy,
   Check,
   Shield,
-  Wifi,
   Send,
-  Plus,
-  Trash2,
-  X,
+  Wifi,
+  WifiOff,
+  Eye,
+  EyeOff,
+  Clock,
+  Radio,
 } from 'lucide-react';
-import { FlickP2PService } from './p2p';
-import { FlickMessage, PairedDevice, PairingTicket } from './types';
+
+interface FlickItem {
+  id: string;
+  msg_type: string;
+  content: string;
+  preview: string;
+  sensitive: boolean;
+  from_device_id: string;
+  from_device_name: string;
+  timestamp: number;
+}
+
+interface PairedDevice {
+  id: string;
+  name: string;
+  online: boolean;
+  last_seen: number;
+}
+
+interface NodeInfo {
+  node_id: string;
+  device_id: string;
+  device_name: string;
+}
 
 export const App: React.FC = () => {
-  const [p2p, setP2p] = useState<FlickP2PService | null>(null);
-  const [peerId, setPeerId] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'flicks' | 'pair' | 'devices'>('flicks');
-  const [flickText, setFlickText] = useState<string>('');
-  const [messages, setMessages] = useState<FlickMessage[]>([]);
+  const [nodeInfo, setNodeInfo] = useState<NodeInfo | null>(null);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
-  
-  // Mode B Toast State
-  const [incomingToast, setIncomingToast] = useState<FlickMessage | null>(null);
-  const [toastRevealed, setToastRevealed] = useState<boolean>(false);
+  const [recentFlicks, setRecentFlicks] = useState<FlickItem[]>([]);
+  const [inputContent, setInputContent] = useState<string>('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  
-  // Manual Ticket State
-  const [manualTicket, setManualTicket] = useState<string>('');
-  const [pairingStatus, setPairingStatus] = useState<string>('');
-  const [isScanning, setIsScanning] = useState<boolean>(false);
+  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
 
+  // Invoke Tauri commands when running in Tauri context
   useEffect(() => {
-    const service = new FlickP2PService();
-    service.initialize().then((id) => {
-      setPeerId(id);
-      setP2p(service);
-    });
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
 
-    service.onMessage((msg) => {
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === msg.id)) return prev;
-        return [msg, ...prev];
+    if (isTauri) {
+      const { invoke } = (window as any).__TAURI_INTERNALS__;
+
+      invoke('get_node_info').then((info: NodeInfo) => setNodeInfo(info)).catch(() => {});
+      invoke('get_paired_devices').then((devices: PairedDevice[]) => setPairedDevices(devices)).catch(() => {});
+      invoke('get_recent_flicks').then((flicks: FlickItem[]) => setRecentFlicks(flicks)).catch(() => {});
+
+      // Listen for updates from backend broadcast
+      if ((window as any).__TAURI__?.event) {
+        const { listen } = (window as any).__TAURI__.event;
+        listen('flick-updated', (event: any) => {
+          setRecentFlicks((prev) => [event.payload, ...prev]);
+        });
+      }
+    } else {
+      setNodeInfo({
+        node_id: '',
+        device_id: 'dev_pc',
+        device_name: 'Windows PC',
       });
-      setIncomingToast(msg);
-      setToastRevealed(false);
-    });
-
-    service.onPeerConnect((device) => {
-      setPairedDevices([...service.getPairedDevices()]);
-      setPairingStatus(`✅ Paired with ${device.deviceName}!`);
-    });
+      setPairedDevices([]);
+      setRecentFlicks([]);
+    }
   }, []);
 
-  const handleSendFlick = () => {
-    if (!p2p || !flickText.trim()) return;
-    const msg = p2p.broadcastFlick(flickText.trim());
-    setMessages((prev) => [msg, ...prev]);
-    setFlickText('');
+  const handleSendFlick = async () => {
+    if (!inputContent.trim()) return;
+
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (isTauri) {
+      const { invoke } = (window as any).__TAURI_INTERNALS__;
+      try {
+        const newItem: FlickItem = await invoke('send_flick_command', { content: inputContent.trim() });
+        setRecentFlicks((prev) => [newItem, ...prev]);
+        setInputContent('');
+      } catch (err) {
+        console.error('Failed to send flick:', err);
+      }
+    } else {
+      const newItem: FlickItem = {
+        id: String(Date.now()),
+        msg_type: 'clipboard',
+        content: inputContent.trim(),
+        preview: inputContent.length > 40 ? `${inputContent.slice(0, 40)}...` : inputContent,
+        sensitive: inputContent.length > 20 && !inputContent.includes(' '),
+        from_device_id: nodeInfo?.device_id || 'dev_pc',
+        from_device_name: nodeInfo?.device_name || 'Windows PC',
+        timestamp: Math.floor(Date.now() / 1000),
+      };
+      setRecentFlicks((prev) => [newItem, ...prev]);
+      setInputContent('');
+    }
   };
 
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
+  const handleCopy = (content: string, id: string) => {
+    navigator.clipboard.writeText(content);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleAcceptToast = (msg: FlickMessage) => {
-    navigator.clipboard.writeText(msg.content);
-    setCopiedId(msg.id);
-    setIncomingToast(null);
+  const toggleReveal = (id: string) => {
+    setRevealedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
   };
 
-  const handlePairManual = async () => {
-    if (!p2p || !manualTicket.trim()) return;
-    try {
-      setPairingStatus('Connecting...');
-      let targetPeerId = manualTicket.trim();
-      if (manualTicket.includes('{')) {
-        try {
-          const ticket = JSON.parse(manualTicket);
-          targetPeerId = ticket.peerId || targetPeerId;
-        } catch (_) {}
-      }
-
-      if (!targetPeerId.startsWith('flick_')) {
-        setPairingStatus(`⚠️ Invalid Peer ID "${targetPeerId}". Enter a valid Ticket ID starting with "flick_" (e.g. flick_m_849201).`);
-        return;
-      }
-
-      const dev = await p2p.connectToPeer(targetPeerId);
-      setPairedDevices([...p2p.getPairedDevices()]);
-      setPairingStatus(`✅ Connected to ${dev.deviceName}!`);
-      setManualTicket('');
-    } catch (err) {
-      setPairingStatus(`❌ Connection failed. Verify device is active.`);
-    }
+  const formatTime = (ts: number) => {
+    const diffSec = Math.floor(Date.now() / 1000 - ts);
+    if (diffSec < 60) return 'Just now';
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    return `${Math.floor(diffSec / 3600)}h ago`;
   };
-
-  // QR Scanner Effect
-  useEffect(() => {
-    if (!isScanning) return;
-
-    const scanner = new Html5QrcodeScanner(
-      'qr-reader',
-      { fps: 10, qrbox: { width: 240, height: 240 } },
-      false
-    );
-
-    scanner.render(
-      (decodedText) => {
-        setManualTicket(decodedText);
-        setIsScanning(false);
-        scanner.clear();
-      },
-      () => {}
-    );
-
-    return () => {
-      scanner.clear().catch(() => {});
-    };
-  }, [isScanning]);
-
-  const qrPayload = p2p ? JSON.stringify(p2p.createPairingTicket()) : '';
 
   return (
-    <div className="app-container">
-      {/* Mode B Toast Notification */}
-      {incomingToast && (
-        <div className="mode-b-toast">
-          <div className="toast-header">
-            <div className="toast-sender">
-              <Zap size={18} />
-              <span>Incoming Flick from {incomingToast.fromDeviceName}</span>
-            </div>
-            <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => setIncomingToast(null)}>
-              <X size={14} />
-            </button>
-          </div>
-
+    <div
+      style={{
+        backgroundColor: '#F8F9FA',
+        color: '#0F172A',
+        fontFamily: "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {/* Editorial Header */}
+      <header
+        style={{
+          backgroundColor: '#FFFFFF',
+          borderBottom: '1px solid #E2E8F0',
+          padding: '16px 28px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div
-            className={`toast-preview ${incomingToast.sensitive && !toastRevealed ? 'sensitive' : ''}`}
-            onClick={() => setToastRevealed(true)}
+            style={{
+              backgroundColor: '#0F4C3A',
+              color: '#FFFFFF',
+              borderRadius: '8px',
+              padding: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
           >
-            {incomingToast.sensitive && !toastRevealed ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Shield size={16} />
-                <span>Sensitive content hidden — tap to reveal preview</span>
-              </div>
-            ) : (
-              incomingToast.content
-            )}
+            <Zap size={20} fill="#FFFFFF" />
           </div>
-
-          <div className="toast-actions">
-            <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => handleAcceptToast(incomingToast)}>
-              <Copy size={16} />
-              <span>Copy to Clipboard</span>
-            </button>
-            <button className="btn btn-secondary" onClick={() => setIncomingToast(null)}>
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Concept 1 Header */}
-      <header className="header">
-        <div className="brand">
-          <div className="logo-badge">⚡</div>
           <div>
-            <div className="brand-title">Flick</div>
-            <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
-              End-to-End P2P Clipboard Sync
-            </div>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: '18px',
+                fontWeight: 700,
+                letterSpacing: '-0.02em',
+                color: '#0F172A',
+              }}
+            >
+              Flick Desktop
+            </h1>
+            <span style={{ fontSize: '12px', color: '#64748B', fontWeight: 500 }}>
+              {nodeInfo?.device_name || 'Windows PC'} • P2P Encrypted
+            </span>
           </div>
         </div>
 
-        <div className="status-badge">
-          <div className="status-dot"></div>
-          <Wifi size={15} />
-          <span>Local Wi-Fi P2P Active</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: '#F1F5F9',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: 600,
+              color: '#0F4C3A',
+            }}
+          >
+            <Radio size={14} />
+            <span>Iroh P2P Active</span>
+          </div>
         </div>
       </header>
 
-      {/* Navigation Tabs */}
-      <div className="nav-tabs">
-        <button
-          className={`tab-btn ${activeTab === 'flicks' ? 'active' : ''}`}
-          onClick={() => setActiveTab('flicks')}
-        >
-          <Zap size={16} />
-          <span>Flicks ({messages.length})</span>
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'pair' ? 'active' : ''}`}
-          onClick={() => setActiveTab('pair')}
-        >
-          <QrCode size={16} />
-          <span>Pair Device</span>
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'devices' ? 'active' : ''}`}
-          onClick={() => setActiveTab('devices')}
-        >
-          <Smartphone size={16} />
-          <span>Devices ({pairedDevices.length})</span>
-        </button>
-      </div>
-
-      {/* TAB 1: FLICKS LIST & SEND BOX */}
-      {activeTab === 'flicks' && (
-        <div>
-          {/* Flick Send Card */}
-          <div className="card">
-            <div className="card-title">
-              <Zap size={20} color="var(--accent-flick)" />
-              <span>Flick New Content</span>
-            </div>
-
-            <textarea
-              className="flick-textarea"
-              placeholder="Paste text, link, code snippet, or password to flick to paired devices..."
-              value={flickText}
-              onChange={(e) => setFlickText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  handleSendFlick();
-                }
+      {/* Main Content Layout */}
+      <main
+        style={{
+          flex: 1,
+          padding: '28px',
+          maxWidth: '1100px',
+          width: '100%',
+          margin: '0 auto',
+          display: 'grid',
+          gridTemplateColumns: '320px 1fr',
+          gap: '24px',
+          boxSizing: 'border-box',
+        }}
+      >
+        {/* Sidebar Panel: Paired Devices */}
+        <aside style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              border: '1px solid #E2E8F0',
+              padding: '20px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px',
               }}
-            />
-
-            <div className="send-actions">
-              <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-                Tip: Press Ctrl+Enter to send instantly
-              </div>
-
-              <button
-                className="btn btn-primary"
-                onClick={handleSendFlick}
-                disabled={!flickText.trim()}
+            >
+              <h2 style={{ margin: 0, fontSize: '14px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>
+                Paired Devices
+              </h2>
+              <span
+                style={{
+                  backgroundColor: '#0F4C3A',
+                  color: '#FFFFFF',
+                  borderRadius: '10px',
+                  padding: '2px 8px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                }}
               >
-                <Send size={16} />
-                <span>Flick Content</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Flick History Card */}
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
-              <div className="card-title" style={{ marginBottom: 0 }}>
-                <span>Clipboard Stream</span>
-              </div>
-
-              {messages.length > 0 && (
-                <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => setMessages([])}>
-                  <Trash2 size={14} />
-                  <span>Clear History</span>
-                </button>
-              )}
+                {pairedDevices.filter((d) => d.online).length} Online
+              </span>
             </div>
 
-            {messages.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-                <Zap size={36} color="var(--border)" style={{ marginBottom: '12px' }} />
-                <div style={{ fontWeight: 700, fontSize: '15px' }}>No flicks yet</div>
-                <div style={{ fontSize: '13px', marginTop: '4px' }}>
-                  Flick text above or pair a phone to receive incoming clipboard items.
-                </div>
-              </div>
-            ) : (
-              <div className="history-list">
-                {messages.map((msg) => (
-                  <div className="history-item" key={msg.id}>
-                    <div style={{ flex: 1, paddingRight: '20px' }}>
-                      <div className="history-meta">
-                        <span style={{ fontWeight: 700, color: msg.status === 'sent' ? 'var(--accent-flick)' : 'var(--accent-primary)' }}>
-                          {msg.status === 'sent' ? '📤 Outgoing Flick' : `📥 From ${msg.fromDeviceName}`}
-                        </span>
-                        <span>•</span>
-                        <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-
-                        {msg.sensitive && (
-                          <span style={{ backgroundColor: '#FEF2F2', color: '#991B1B', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 700 }}>
-                            🔒 Sensitive
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="history-content">{msg.content}</div>
-                    </div>
-
-                    <button className="btn btn-secondary" style={{ padding: '8px 14px' }} onClick={() => handleCopy(msg.content, msg.id)}>
-                      {copiedId === msg.id ? (
-                        <>
-                          <Check size={15} color="var(--green)" />
-                          <span style={{ color: 'var(--green)' }}>Copied!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={15} />
-                          <span>Copy</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB 2: PAIR DEVICE */}
-      {activeTab === 'pair' && (
-        <div>
-          <div className="card">
-            <div className="card-title">
-              <QrCode size={20} color="var(--accent-primary)" />
-              <span>Scan QR Code to Pair Phone</span>
-            </div>
-
-            <div className="qr-container">
-              <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
-                Open this web app on your phone's browser and scan this QR code:
-              </div>
-
-              <div className="qr-box">
-                {qrPayload ? <QRCodeSVG value={qrPayload} size={220} level="M" /> : <div>Generating QR Code...</div>}
-              </div>
-
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Local Peer Ticket ID:</div>
-                <div className="mono" style={{ fontSize: '14px', fontWeight: 700 }}>
-                  {peerId || 'Initializing...'}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="card-title">
-              <Smartphone size={20} color="var(--accent-flick)" />
-              <span>Scan or Enter Peer Ticket</span>
-            </div>
-
-            <div style={{ marginBottom: '16px' }}>
-              <button className="btn btn-secondary" style={{ width: '100%', padding: '12px' }} onClick={() => setIsScanning(!isScanning)}>
-                <QrCode size={16} />
-                <span>{isScanning ? 'Close Camera Scanner' : '📷 Open Camera Scanner'}</span>
-              </button>
-
-              {isScanning && <div id="qr-reader" style={{ marginTop: '16px', borderRadius: '12px', overflow: 'hidden' }}></div>}
-            </div>
-
-            <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Or manually paste Laptop Peer ID below:</div>
-
-            <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-              <input
-                type="text"
-                className="flick-textarea"
-                style={{ minHeight: 'auto', padding: '12px', flex: 1 }}
-                placeholder="Paste Peer ID (e.g. flick_abc123)..."
-                value={manualTicket}
-                onChange={(e) => setManualTicket(e.target.value)}
-              />
-
-              <button className="btn btn-primary" onClick={handlePairManual}>
-                <Plus size={16} />
-                <span>Pair</span>
-              </button>
-            </div>
-
-            {pairingStatus && (
-              <div style={{ marginTop: '12px', fontSize: '14px', fontWeight: 700, color: pairingStatus.startsWith('✅') ? 'var(--green)' : 'var(--accent-flick)' }}>
-                {pairingStatus}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB 3: PAIRED DEVICES */}
-      {activeTab === 'devices' && (
-        <div className="card">
-          <div className="card-title">
-            <Smartphone size={20} color="var(--accent-primary)" />
-            <span>Paired Devices</span>
-          </div>
-
-          {pairedDevices.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-              <Smartphone size={36} color="var(--border)" style={{ marginBottom: '12px' }} />
-              <div style={{ fontWeight: 700, fontSize: '15px' }}>No paired devices yet</div>
-              <div style={{ fontSize: '13px', marginTop: '4px' }}>
-                Go to the "Pair Device" tab to pair your phone and laptop over Wi-Fi.
-              </div>
-            </div>
-          ) : (
-            <div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {pairedDevices.map((dev) => (
-                <div key={dev.deviceId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                    <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'var(--bg-surface-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-primary)' }}>
-                      {dev.deviceName.toLowerCase().includes('phone') ? <Smartphone size={22} /> : <Laptop size={22} />}
-                    </div>
-
+                <div
+                  key={dev.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    backgroundColor: '#F8F9FA',
+                    border: '1px solid #F1F5F9',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {dev.name.toLowerCase().includes('mobile') || dev.name.toLowerCase().includes('phone') ? (
+                      <Smartphone size={18} color="#0F4C3A" />
+                    ) : (
+                      <Laptop size={18} color="#0F4C3A" />
+                    )}
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: '15px' }}>{dev.deviceName}</div>
-                      <div className="mono" style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
-                        {dev.peerId}
-                      </div>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{dev.name}</div>
+                      <div style={{ fontSize: '11px', color: '#94A3B8' }}>{formatTime(dev.last_seen)}</div>
                     </div>
                   </div>
 
-                  <div className="status-badge" style={{ padding: '6px 12px', fontSize: '12px' }}>
-                    <div className="status-dot"></div>
-                    <span>Active</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {dev.online ? (
+                      <Wifi size={14} color="#0F4C3A" />
+                    ) : (
+                      <WifiOff size={14} color="#94A3B8" />
+                    )}
+                    <span
+                      style={{
+                        height: '8px',
+                        width: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: dev.online ? '#0F4C3A' : '#CBD5E1',
+                      }}
+                    />
                   </div>
                 </div>
               ))}
             </div>
-          )}
-        </div>
-      )}
+          </div>
+
+          {/* Node Identity Card */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              border: '1px solid #E2E8F0',
+              padding: '20px',
+            }}
+          >
+            <h2 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748B' }}>
+              Node Identity
+            </h2>
+            <div style={{ fontSize: '12px', color: '#475569', marginBottom: '8px', fontWeight: 600 }}>
+              Device ID: <code style={{ fontFamily: 'JetBrains Mono', color: '#C2410C' }}>{nodeInfo?.device_id || 'dev_pc'}</code>
+            </div>
+            <div style={{ fontSize: '11px', color: '#94A3B8', wordBreak: 'break-all', fontFamily: 'JetBrains Mono' }}>
+              {nodeInfo?.node_id || 'Connecting to relay...'}
+            </div>
+          </div>
+        </aside>
+
+        {/* Center Panel: Send & Clipboard History */}
+        <section style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {/* Quick Flick Input Box */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              border: '1px solid #E2E8F0',
+              padding: '20px',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+            }}
+          >
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>
+              Flick to Paired Devices
+            </label>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <input
+                type="text"
+                value={inputContent}
+                onChange={(e) => setInputContent(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendFlick()}
+                placeholder="Paste URL, code snippet, or text to broadcast..."
+                style={{
+                  flex: 1,
+                  padding: '12px 16px',
+                  borderRadius: '8px',
+                  border: '1px solid #CBD5E1',
+                  outline: 'none',
+                  fontSize: '14px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  backgroundColor: '#F8F9FA',
+                }}
+              />
+              <button
+                onClick={handleSendFlick}
+                style={{
+                  backgroundColor: '#C2410C',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '8px',
+                  padding: '0 20px',
+                  fontWeight: 700,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'background-color 0.15s ease',
+                }}
+              >
+                <Send size={16} />
+                <span>Flick</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Recent Flicks History List */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              border: '1px solid #E2E8F0',
+              padding: '24px',
+              flex: 1,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#0F172A' }}>
+                Recent Flicks History
+              </h2>
+              <span style={{ fontSize: '12px', color: '#64748B' }}>{recentFlicks.length} Items</span>
+            </div>
+
+            {recentFlicks.length === 0 ? (
+              <div style={{ padding: '40px', textAlign: 'center', color: '#94A3B8' }}>
+                <Clock size={32} style={{ marginBottom: '12px', opacity: 0.5 }} />
+                <p style={{ margin: 0, fontSize: '14px' }}>No flicks received yet. Copy text or type above to flick!</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {recentFlicks.map((item) => {
+                  const isRevealed = revealedIds.has(item.id);
+                  const displayContent = item.sensitive && !isRevealed ? item.preview : item.content;
+
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        padding: '16px',
+                        borderRadius: '10px',
+                        border: '1px solid #E2E8F0',
+                        backgroundColor: '#F8F9FA',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              backgroundColor: '#0F4C3A',
+                              color: '#FFFFFF',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                            }}
+                          >
+                            {item.from_device_name}
+                          </span>
+                          {item.sensitive && (
+                            <span
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                color: '#C2410C',
+                                backgroundColor: '#FFEDD5',
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                              }}
+                            >
+                              <Shield size={12} /> Sensitive
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '11px', color: '#94A3B8' }}>{formatTime(item.timestamp)}</span>
+                      </div>
+
+                      <div
+                        style={{
+                          fontFamily: 'JetBrains Mono, monospace',
+                          fontSize: '13px',
+                          color: '#0F172A',
+                          wordBreak: 'break-all',
+                          lineHeight: '1.5',
+                          backgroundColor: '#FFFFFF',
+                          padding: '10px 14px',
+                          borderRadius: '6px',
+                          border: '1px solid #E2E8F0',
+                        }}
+                      >
+                        {displayContent}
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                        {item.sensitive && (
+                          <button
+                            onClick={() => toggleReveal(item.id)}
+                            style={{
+                              backgroundColor: 'transparent',
+                              border: '1px solid #CBD5E1',
+                              borderRadius: '6px',
+                              padding: '4px 10px',
+                              fontSize: '12px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              color: '#475569',
+                            }}
+                          >
+                            {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                            <span>{isRevealed ? 'Hide' : 'Reveal'}</span>
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleCopy(item.content, item.id)}
+                          style={{
+                            backgroundColor: copiedId === item.id ? '#0F4C3A' : '#0F172A',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '6px',
+                            padding: '4px 12px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            transition: 'background-color 0.15s ease',
+                          }}
+                        >
+                          {copiedId === item.id ? <Check size={14} /> : <Copy size={14} />}
+                          <span>{copiedId === item.id ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
     </div>
   );
 };
+
+export default App;

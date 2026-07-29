@@ -25,8 +25,9 @@ class FlickItem {
     required String content,
     required String fromDeviceId,
     required String fromDeviceName,
+    bool? isSensitive,
   }) {
-    final sensitive = detectSensitive(content);
+    final sensitive = isSensitive ?? detectSensitive(content);
     final String previewText;
     if (sensitive) {
       previewText = "🔒 Sensitive content — tap to reveal";
@@ -44,6 +45,22 @@ class FlickItem {
       fromDeviceId: fromDeviceId,
       fromDeviceName: fromDeviceName,
       timestamp: DateTime.now(),
+    );
+  }
+
+  factory FlickItem.fromJson(Map<String, dynamic> json) {
+    final String contentStr = json['content'] as String? ?? '';
+    final int timestampSec = json['ts'] as int? ?? json['timestamp'] as int? ?? 0;
+    return FlickItem(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      content: contentStr,
+      preview: json['preview'] as String? ?? contentStr,
+      isSensitive: json['sensitive'] as bool? ?? false,
+      fromDeviceId: json['from_device_id'] as String? ?? '',
+      fromDeviceName: json['from_device_name'] as String? ?? '',
+      timestamp: DateTime.fromMillisecondsSinceEpoch(
+        timestampSec * 1000,
+      ),
     );
   }
 

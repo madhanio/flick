@@ -23,3 +23,9 @@ mobile/ios/Runner.xcworkspace/
 .vscode/
 *.DS_Store
 Thumbs.db
+
+# Project Context & Local Artifacts
+flick-mobile-release.apk
+FLICK_CONTEXT.md
+core/Hello
+

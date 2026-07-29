@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'screens/main_shell.dart';
+import 'src/rust/api/bridge.dart/frb_generated.dart';
 import 'theme/flick_theme.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await RustLib.init();
   runApp(const FlickApp());
 }
 

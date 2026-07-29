@@ -242,7 +242,70 @@ class _IncomingScreenState extends State<IncomingScreen> {
                           );
                         },
                       ),
-              )
+              ),
+
+              const SizedBox(height: 16),
+
+              // Missed Queue Section (Last 5 offline items)
+              Text(
+                'MISSED FLICKS QUEUE (OFFLINE RECOVERY)',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: FlickColors.textMuted,
+                  letterSpacing: 1.0,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: FlickColors.bgSurface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: FlickColors.borderSubtle),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.history_toggle_off_rounded, size: 18, color: FlickColors.accentFlick),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Offline Buffer Active',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: FlickColors.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            'Last 5 missed flicks are retained locally when network reconnects',
+                            style: TextStyle(fontSize: 11, color: FlickColors.textMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: FlickColors.bgSurface2,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '0 Pending',
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: FlickColors.textMuted,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -250,3 +313,4 @@ class _IncomingScreenState extends State<IncomingScreen> {
     );
   }
 }
+
