@@ -18,6 +18,8 @@ struct RegisteredNode {
     trust_store: Arc<Mutex<DeviceTrustStore>>,
     topic_seed: [u8; 32],
     sender_slot: Arc<Mutex<Option<Arc<GossipSender>>>>,
+    gossip: Gossip,
+    bootstrap_peers_slot: Arc<Mutex<Vec<iroh::net::NodeId>>>,
 }
 
 static ACTIVE_NODES: OnceLock<Mutex<HashMap<String, RegisteredNode>>> = OnceLock::new();
@@ -36,6 +38,8 @@ fn register_active_node(
     trust_store: Arc<Mutex<DeviceTrustStore>>,
     topic_seed: [u8; 32],
     sender_slot: Arc<Mutex<Option<Arc<GossipSender>>>>,
+    gossip: Gossip,
+    bootstrap_peers_slot: Arc<Mutex<Vec<iroh::net::NodeId>>>,
 ) {
     let mut map = active_nodes_map().lock().unwrap();
     map.insert(
@@ -49,6 +53,8 @@ fn register_active_node(
             trust_store,
             topic_seed,
             sender_slot,
+            gossip,
+            bootstrap_peers_slot,
         },
     );
 }
@@ -62,6 +68,10 @@ pub fn generate_keypair() -> String {
 }
 
 pub async fn start_node(device_name: String) -> Result<String> {
+    start_node_with_key(device_name, None).await
+}
+
+pub async fn start_node_with_key(device_name: String, secret_key_bytes: Option<Vec<u8>>) -> Result<String> {
     #[cfg(target_os = "android")]
     {
         android_logger::init_once(
@@ -74,13 +84,24 @@ pub async fn start_node(device_name: String) -> Result<String> {
     #[cfg(target_os = "android")]
     log::error!("🔵 [flick] start_node called: {}", device_name);
 
-    let keypair = FlickKeypair::generate();
+    let keypair = match secret_key_bytes {
+        Some(ref bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(bytes);
+            FlickKeypair::from_bytes(&arr)
+        }
+        _ => FlickKeypair::load_or_generate_persistent(),
+    };
+
     let trust_store = Arc::new(Mutex::new(DeviceTrustStore::new()));
     let topic_seed = [42u8; 32];
 
     use tokio::time::{timeout, Duration};
 
+    let secret_key = keypair.to_secret_key();
+
     let bind_fut = Endpoint::builder()
+        .secret_key(secret_key.clone())
         .alpns(vec![b"/iroh-gossip/0".to_vec()])
         .relay_mode(iroh_net::relay::RelayMode::Default)
         .bind();
@@ -89,6 +110,7 @@ pub async fn start_node(device_name: String) -> Result<String> {
         Ok(res) => res?,
         Err(_) => {
             Endpoint::builder()
+                .secret_key(secret_key)
                 .alpns(vec![b"/iroh-gossip/0".to_vec()])
                 .relay_mode(iroh_net::relay::RelayMode::Default)
                 .bind()
@@ -100,7 +122,6 @@ pub async fn start_node(device_name: String) -> Result<String> {
     let node_id_str = node_id.to_string();
     let device_id = format!("dev_{}", &node_id_str[..8.min(node_id_str.len())]);
 
-    // Add existing nodes' addresses to endpoint and gather bootstrap peers
     let (bootstrap_peers, existing_addrs): (Vec<iroh::net::NodeId>, Vec<iroh::net::NodeAddr>) = {
         let map = active_nodes_map().lock().unwrap();
         (
@@ -135,6 +156,7 @@ pub async fn start_node(device_name: String) -> Result<String> {
     let _ = INCOMING_TX.set(tx);
 
     let sender_slot = Arc::new(Mutex::new(None));
+    let bootstrap_peers_slot = Arc::new(Mutex::new(bootstrap_peers));
 
     register_active_node(
         &device_id,
@@ -145,18 +167,27 @@ pub async fn start_node(device_name: String) -> Result<String> {
         trust_store.clone(),
         topic_seed,
         sender_slot.clone(),
+        gossip.clone(),
+        bootstrap_peers_slot.clone(),
     );
 
-    // Reconnect Watchdog background task (handles initial join + automatic reconnects)
+    // Reconnect Watchdog background task
     let gossip_watchdog = gossip.clone();
     let keypair_watchdog = keypair.clone();
     let trust_store_watchdog = trust_store.clone();
+    let bootstrap_slot_watchdog = bootstrap_peers_slot.clone();
 
     tokio::spawn(async move {
         let mut backoff_ms = 500u64;
         loop {
-            match gossip_watchdog.join(topic, bootstrap_peers.clone()).await {
+            let current_peers = {
+                let slot = bootstrap_slot_watchdog.lock().unwrap();
+                slot.clone()
+            };
+
+            match gossip_watchdog.join(topic, current_peers).await {
                 Ok(topic_handle) => {
+                    eprintln!("[flick] joined topic: {}", topic);
                     let (sender, mut receiver) = topic_handle.split();
                     {
                         let mut slot = sender_slot.lock().unwrap();
@@ -168,6 +199,7 @@ pub async fn start_node(device_name: String) -> Result<String> {
                     while let Some(event_res) = receiver.next().await {
                         match event_res {
                             Ok(iroh_gossip::net::Event::Gossip(GossipEvent::Received(msg))) => {
+                                eprintln!("[flick] raw message received from {}: {} bytes", msg.delivered_from, msg.content.len());
                                 if let Ok(encrypted_payload) = serde_json::from_slice::<EncryptedPayload>(&msg.content) {
                                     {
                                         let mut ts = trust_store_watchdog.lock().unwrap();
@@ -186,6 +218,7 @@ pub async fn start_node(device_name: String) -> Result<String> {
                                     let ts = trust_store_watchdog.lock().unwrap();
                                     match encrypted_payload.decrypt_and_verify(&keypair_watchdog, &ts, &topic_seed) {
                                         Ok(payload) => {
+                                            eprintln!("[flick] flick accepted: {}", payload.preview);
                                             crate::broadcast_incoming_flick(payload.clone());
                                             if let Ok(json_str) = serde_json::to_string(&payload) {
                                                 if let Some(tx) = INCOMING_TX.get() {
@@ -207,8 +240,6 @@ pub async fn start_node(device_name: String) -> Result<String> {
                             }
                         }
                     }
-
-                    eprintln!("⚠️ Gossip subscription stream ended. Re-subscribing in {}ms...", backoff_ms);
                 }
                 Err(e) => {
                     eprintln!("⚠️ Gossip join retry failed: {:?}. Retrying in {}ms...", e, backoff_ms);
@@ -221,6 +252,45 @@ pub async fn start_node(device_name: String) -> Result<String> {
     });
 
     Ok(node_id_str)
+}
+
+pub async fn add_peer(peer_id_str: String) -> Result<bool> {
+    let clean_str = peer_id_str.trim();
+
+    // Extract peerId if JSON string was passed from QR code
+    let target_str = if clean_str.contains('{') {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(clean_str) {
+            val.get("peerId")
+                .or_else(|| val.get("deviceId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(clean_str)
+                .to_string()
+        } else {
+            clean_str.to_string()
+        }
+    } else {
+        clean_str.to_string()
+    };
+
+    if let Ok(target_node_id) = target_str.parse::<iroh::net::NodeId>() {
+        let nodes = {
+            let map = active_nodes_map().lock().unwrap();
+            map.values().cloned().collect::<Vec<_>>()
+        };
+
+        for node in nodes {
+            {
+                let mut peers = node.bootstrap_peers_slot.lock().unwrap();
+                if !peers.contains(&target_node_id) {
+                    peers.push(target_node_id);
+                }
+            }
+            let topic = FlickGossipNode::create_topic(&node.topic_seed);
+            let _ = node.gossip.join(topic, vec![target_node_id]).await;
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub async fn send_flick(content: String, device_id: String, _device_name: String) -> Result<bool> {
@@ -239,6 +309,8 @@ pub async fn send_flick(content: String, device_id: String, _device_name: String
 
             if let Some(sender) = maybe_sender {
                 let payload = ClipboardPayload::new(content, node.device_id.clone(), node.device_name.clone());
+                let topic = FlickGossipNode::create_topic(&node.topic_seed);
+                eprintln!("[flick] sending: {} to topic {}", payload.preview, topic);
                 let encrypted_payload = EncryptedPayload::encrypt_and_sign(&payload, &node.keypair, &node.topic_seed)?;
                 FlickGossipNode::broadcast_encrypted_payload(&sender, &encrypted_payload).await?;
                 return Ok(true);
