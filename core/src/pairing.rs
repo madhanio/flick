@@ -24,6 +24,38 @@ impl FlickKeypair {
         Self { signing_key }
     }
 
+    /// Load keypair from persistent file or generate and save a new one (Desktop path)
+    pub fn load_or_generate_persistent() -> Self {
+        if let Some(config_dir) = dirs::config_dir() {
+            let flick_dir = config_dir.join("flick");
+            let key_path = flick_dir.join("secret.key");
+
+            if key_path.exists() {
+                if let Ok(data) = std::fs::read(&key_path) {
+                    if data.len() == 32 {
+                        let mut bytes = [0u8; 32];
+                        bytes.copy_from_slice(&data);
+                        return Self::from_bytes(&bytes);
+                    }
+                }
+            }
+
+            // Missing or corrupt — generate new keypair and attempt to save
+            let keypair = Self::generate();
+            if std::fs::create_dir_all(&flick_dir).is_ok() {
+                let _ = std::fs::write(&key_path, keypair.secret_bytes());
+            }
+            keypair
+        } else {
+            Self::generate()
+        }
+    }
+
+    /// Convert to SecretKey for iroh Endpoint
+    pub fn to_secret_key(&self) -> iroh::net::key::SecretKey {
+        iroh::net::key::SecretKey::from_bytes(&self.secret_bytes())
+    }
+
     /// Get verifying (public) key
     pub fn public_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()

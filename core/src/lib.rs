@@ -89,8 +89,13 @@ pub async fn set_incoming_handler(handler: impl Fn(FlickPayload) + Send + 'stati
 
 /// Initialize the iroh-gossip node with catch-unwind protection
 pub async fn start_node(device_name: String) -> Result<String, String> {
+    start_node_with_key(device_name, None).await
+}
+
+/// Initialize the iroh-gossip node with explicit secret key bytes
+pub async fn start_node_with_key(device_name: String, secret_key_bytes: Option<Vec<u8>>) -> Result<String, String> {
     let res = AssertUnwindSafe(async move {
-        bridge::start_node(device_name).await.map_err(|e| e.to_string())
+        bridge::start_node_with_key(device_name, secret_key_bytes).await.map_err(|e| e.to_string())
     })
     .catch_unwind()
     .await;
@@ -116,6 +121,20 @@ pub async fn send_flick(content: String, device_id: String, device_name: String)
     match res {
         Ok(inner_res) => inner_res,
         Err(panic_err) => Err(format!("Panic caught in send_flick: {}", panic_to_string(panic_err))),
+    }
+}
+
+/// Add a paired peer by NodeId / Ticket string with catch-unwind protection
+pub async fn add_peer(peer_id_str: String) -> Result<bool, String> {
+    let res = AssertUnwindSafe(async move {
+        bridge::add_peer(peer_id_str).await.map_err(|e| e.to_string())
+    })
+    .catch_unwind()
+    .await;
+
+    match res {
+        Ok(inner_res) => inner_res,
+        Err(panic_err) => Err(format!("Panic caught in add_peer: {}", panic_to_string(panic_err))),
     }
 }
 
