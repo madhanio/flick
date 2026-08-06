@@ -6,12 +6,17 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `FlickNodeHandle`
+// These functions are ignored because they are not marked as `pub`: `active_nodes_map`, `register_active_node`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `FlickNodeHandle`, `RegisteredNode`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`
 
 String generateKeypair() => RustLib.instance.api.crateBridgeGenerateKeypair();
 
 Future<String> startNode({required String deviceName}) =>
     RustLib.instance.api.crateBridgeStartNode(deviceName: deviceName);
+
+Future<bool> addPeer({required String peerIdStr}) =>
+    RustLib.instance.api.crateBridgeAddPeer(peerIdStr: peerIdStr);
 
 Future<bool> sendFlick(
         {required String content,
@@ -19,9 +24,6 @@ Future<bool> sendFlick(
         required String deviceName}) =>
     RustLib.instance.api.crateBridgeSendFlick(
         content: content, deviceId: deviceId, deviceName: deviceName);
-
-Future<bool> addPeer({required String peerIdStr}) =>
-    RustLib.instance.api.crateBridgeAddPeer(peerIdStr: peerIdStr);
 
 Stream<String> incomingFlicksStream() =>
     RustLib.instance.api.crateBridgeIncomingFlicksStream();
