@@ -25,7 +25,8 @@ mobile/ios/Runner.xcworkspace/
 Thumbs.db
 
 # Project Context & Local Artifacts
-flick-mobile-release.apk
-FLICK_CONTEXT.md
-core/Hello
+# Release Packages (Temporary)
+*.apk
+*.exe
+
 
