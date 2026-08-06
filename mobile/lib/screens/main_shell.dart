@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/flick_item.dart';
@@ -59,29 +60,58 @@ class _MainShellState extends State<MainShell> {
     ),
   ];
 
+  StreamSubscription<String>? _incomingSub;
+
   @override
   void initState() {
     super.initState();
 
-    BridgeService.initialize().then((_) {
-      if (mounted) {
-        setState(() {
-          myPeerId = BridgeService.nodeId ?? BridgeService.deviceId ?? 'Ready';
-        });
-      }
-    });
+    _initBridge();
 
-    BridgeService.incomingStream().listen((jsonStr) {
+    _incomingSub = BridgeService.incomingStream().listen((jsonStr) {
       if (mounted) {
         try {
           final Map<String, dynamic> json = jsonDecode(jsonStr);
           final item = FlickItem.fromJson(json);
+          debugPrint('[flick] dart received: ${item.preview}');
           setState(() {
             _incomingQueue.insert(0, item);
           });
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('[flick] Error parsing incoming flick JSON: $e');
+        }
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _incomingSub?.cancel();
+    super.dispose();
+  }
+
+  void _initBridge() async {
+    await BridgeService.initialize();
+    _updatePeerId();
+    Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (mounted) {
+        _updatePeerId();
+        if (myPeerId != 'Initializing...' && !myPeerId.startsWith('node_mock')) {
+          timer.cancel();
+        }
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  void _updatePeerId() {
+    final id = BridgeService.nodeId ?? BridgeService.deviceId;
+    if (id != null && id.isNotEmpty && id != myPeerId) {
+      setState(() {
+        myPeerId = id;
+      });
+    }
   }
 
   void _handleSendFlick(String content) {
@@ -111,6 +141,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   void _handleAddPair(String name, String id) {
+    BridgeService.addPeer(id);
     setState(() {
       if (!_pairedDevices.any((d) => d.id == id)) {
         _pairedDevices.add(
