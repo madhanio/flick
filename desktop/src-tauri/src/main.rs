@@ -149,6 +149,30 @@ async fn send_flick_command(
     Ok(item)
 }
 
+#[tauri::command]
+async fn add_peer_command(code: String, state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    let res = flick_core::add_peer(code.clone()).await.unwrap_or(false);
+    let name = if code.contains("deviceName") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&code) {
+            v.get("deviceName").and_then(|s| s.as_str()).unwrap_or("Paired Device").to_string()
+        } else {
+            "Paired Device".to_string()
+        }
+    } else {
+        "Paired Device".to_string()
+    };
+    let mut devices = state.paired_devices.lock().unwrap();
+    if !devices.iter().any(|d| d.id == code) {
+        devices.push(PairedDeviceStatus {
+            id: code,
+            name,
+            online: true,
+            last_seen: Utc::now().timestamp(),
+        });
+    }
+    Ok(res)
+}
+
 #[tokio::main]
 async fn main() {
     let state = Arc::new(AppState::new());
@@ -282,6 +306,8 @@ async fn main() {
                             *last = text.clone();
                             drop(last);
 
+                            eprintln!("[flick] clipboard changed: {} chars", text.chars().count());
+
                             let sensitive = is_sensitive(&text);
                             let preview = generate_preview(&text, sensitive);
 
@@ -341,7 +367,8 @@ async fn main() {
             get_node_info,
             get_paired_devices,
             get_recent_flicks,
-            send_flick_command
+            send_flick_command,
+            add_peer_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
