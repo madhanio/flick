@@ -202,6 +202,8 @@ class _PairScreenState extends State<PairScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isInitializing = widget.myDeviceId == 'Initializing...' || widget.myDeviceId.isEmpty;
+
     return Scaffold(
       backgroundColor: FlickColors.bgBase,
       body: SafeArea(
@@ -281,19 +283,38 @@ class _PairScreenState extends State<PairScreen> {
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(color: FlickColors.borderSubtle),
                       ),
-                      child: QrImageView(
-                        data: _qrPayload,
-                        version: QrVersions.auto,
-                        size: 180.0,
-                        eyeStyle: const QrEyeStyle(
-                          eyeShape: QrEyeShape.square,
-                          color: FlickColors.accentPrimary,
-                        ),
-                        dataModuleStyle: const QrDataModuleStyle(
-                          dataModuleShape: QrDataModuleShape.square,
-                          color: FlickColors.textPrimary,
-                        ),
-                      ),
+                      child: isInitializing
+                          ? const SizedBox(
+                              width: 180.0,
+                              height: 180.0,
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  CircularProgressIndicator(color: FlickColors.accentPrimary),
+                                  SizedBox(height: 12),
+                                  Text(
+                                    'Generating Token ID...',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: FlickColors.textMuted,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : QrImageView(
+                              data: _qrPayload,
+                              version: QrVersions.auto,
+                              size: 180.0,
+                              eyeStyle: const QrEyeStyle(
+                                eyeShape: QrEyeShape.square,
+                                color: FlickColors.accentPrimary,
+                              ),
+                              dataModuleStyle: const QrDataModuleStyle(
+                                dataModuleShape: QrDataModuleShape.square,
+                                color: FlickColors.textPrimary,
+                              ),
+                            ),
                     ),
                     const SizedBox(height: 16),
                     Text(

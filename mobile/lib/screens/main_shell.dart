@@ -90,10 +90,9 @@ class _MainShellState extends State<MainShell> {
     super.dispose();
   }
 
-  void _initBridge() async {
-    await BridgeService.initialize();
+  void _initBridge() {
     _updatePeerId();
-    Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    Timer.periodic(const Duration(milliseconds: 300), (timer) {
       if (mounted) {
         _updatePeerId();
         if (myPeerId != 'Initializing...' && !myPeerId.startsWith('node_mock')) {
@@ -103,10 +102,19 @@ class _MainShellState extends State<MainShell> {
         timer.cancel();
       }
     });
+
+    BridgeService.initialize().then((_) {
+      if (mounted) {
+        _updatePeerId();
+      }
+    }).catchError((e) {
+      debugPrint('[flick] BridgeService.initialize error: $e');
+    });
   }
 
   void _updatePeerId() {
     final id = BridgeService.nodeId ?? BridgeService.deviceId;
+    debugPrint('[flick] _updatePeerId tick - nodeId: ${BridgeService.nodeId}, deviceId: ${BridgeService.deviceId}, current myPeerId: $myPeerId');
     if (id != null && id.isNotEmpty && id != myPeerId) {
       setState(() {
         myPeerId = id;
