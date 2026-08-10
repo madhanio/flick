@@ -1,7 +1,7 @@
 # flick
 
 this project is still under working! 
-get back here soon ;)
+get back here soon..
 
 
-thanks for visiting!
+thanks for visiting ;)
