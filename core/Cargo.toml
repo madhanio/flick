@@ -27,10 +27,10 @@ hex = "0.4"
 rand = "0.8"
 chrono = "0.4"
 futures-lite = "2.3"
+log = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.14"
-log = "0.4"
 
 [[bin]]
 name = "flick_node"

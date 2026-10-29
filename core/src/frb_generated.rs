@@ -217,7 +217,7 @@ fn wire__crate__bridge__start_node_impl(
             move |context| async move {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
                     (move || async move {
-                        let output_ok = crate::bridge::start_node(api_device_name).await?;
+                        let output_ok = crate::bridge::start_node(api_device_name, None).await?;
                         Ok(output_ok)
                     })()
                     .await,

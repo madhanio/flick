@@ -67,8 +67,8 @@ pub fn generate_keypair() -> String {
     FlickKeypair::generate().public_key_hex()
 }
 
-pub async fn start_node(device_name: String) -> Result<String> {
-    start_node_with_key(device_name, None).await
+pub async fn start_node(device_name: String, secret_key_bytes: Option<Vec<u8>>) -> Result<String> {
+    start_node_with_key(device_name, secret_key_bytes).await
 }
 
 pub async fn start_node_with_key(device_name: String, secret_key_bytes: Option<Vec<u8>>) -> Result<String> {
@@ -90,94 +90,102 @@ pub async fn start_node_with_key(device_name: String, secret_key_bytes: Option<V
             arr.copy_from_slice(bytes);
             FlickKeypair::from_bytes(&arr)
         }
-        _ => FlickKeypair::load_or_generate_persistent(),
+        _ => FlickKeypair::generate(),
     };
-
-    let trust_store = Arc::new(Mutex::new(DeviceTrustStore::new()));
-    let topic_seed = [42u8; 32];
-
-    use tokio::time::{timeout, Duration};
 
     let secret_key = keypair.to_secret_key();
-
-    let bind_fut = Endpoint::builder()
-        .secret_key(secret_key.clone())
-        .alpns(vec![b"/iroh-gossip/0".to_vec()])
-        .relay_mode(iroh_net::relay::RelayMode::Default)
-        .bind();
-
-    let endpoint = match timeout(Duration::from_secs(8), bind_fut).await {
-        Ok(res) => res?,
-        Err(_) => {
-            Endpoint::builder()
-                .secret_key(secret_key)
-                .alpns(vec![b"/iroh-gossip/0".to_vec()])
-                .relay_mode(iroh_net::relay::RelayMode::Default)
-                .bind()
-                .await?
-        }
-    };
-    let node_addr = endpoint.node_addr().await?;
-    let node_id = node_addr.node_id;
+    let node_id = secret_key.public();
     let node_id_str = node_id.to_string();
     let device_id = format!("dev_{}", &node_id_str[..8.min(node_id_str.len())]);
 
-    let (bootstrap_peers, existing_addrs): (Vec<iroh::net::NodeId>, Vec<iroh::net::NodeAddr>) = {
-        let map = active_nodes_map().lock().unwrap();
-        (
-            map.values().map(|n| n.node_id).collect(),
-            map.values().map(|n| n.node_addr.clone()).collect(),
-        )
-    };
-
-    for addr in existing_addrs {
-        let _ = endpoint.add_node_addr(addr);
+    // Ensure INCOMING_TX is set immediately before returning
+    if INCOMING_TX.get().is_none() {
+        let (tx, _) = tokio::sync::broadcast::channel::<String>(32);
+        let _ = INCOMING_TX.set(tx);
     }
 
-    let gossip = Gossip::from_endpoint(endpoint.clone(), Default::default(), &Default::default());
-    let topic = FlickGossipNode::create_topic(&topic_seed);
+    let device_name_clone = device_name.clone();
+    let keypair_clone = keypair.clone();
+    let device_id_clone = device_id.clone();
 
-    let endpoint_clone = endpoint.clone();
-    let gossip_clone = gossip.clone();
+    // Detached background task for network binding, STUN probes, and gossip connection
     tokio::spawn(async move {
-        while let Some(incoming) = endpoint_clone.accept().await {
-            let gossip = gossip_clone.clone();
-            tokio::spawn(async move {
-                if let Ok(connecting) = incoming.accept() {
-                    if let Ok(connection) = connecting.await {
-                        let _ = gossip.handle_connection(connection).await;
-                    }
-                }
-            });
+        let trust_store = Arc::new(Mutex::new(DeviceTrustStore::new()));
+        let topic_seed = [42u8; 32];
+
+        let bind_fut = Endpoint::builder()
+            .secret_key(secret_key.clone())
+            .alpns(vec![b"/iroh-gossip/0".to_vec()])
+            .relay_mode(iroh_net::relay::RelayMode::Default)
+            .bind();
+
+        let endpoint = match bind_fut.await {
+            Ok(res) => res,
+            Err(e) => {
+                eprintln!("⚠️ Endpoint bind error: {:?}", e);
+                return;
+            }
+        };
+
+        let node_addr = match endpoint.node_addr().await {
+            Ok(addr) => addr,
+            Err(e) => {
+                eprintln!("⚠️ Node addr resolution error: {:?}", e);
+                return;
+            }
+        };
+
+        let (bootstrap_peers, existing_addrs): (Vec<iroh::net::NodeId>, Vec<iroh::net::NodeAddr>) = {
+            let map = active_nodes_map().lock().unwrap();
+            (
+                map.values().map(|n| n.node_id).collect(),
+                map.values().map(|n| n.node_addr.clone()).collect(),
+            )
+        };
+
+        for addr in existing_addrs {
+            let _ = endpoint.add_node_addr(addr);
         }
-    });
 
-    let (tx, _) = tokio::sync::broadcast::channel::<String>(32);
-    let _ = INCOMING_TX.set(tx);
+        let gossip = Gossip::from_endpoint(endpoint.clone(), Default::default(), &Default::default());
+        let topic = FlickGossipNode::create_topic(&topic_seed);
 
-    let sender_slot = Arc::new(Mutex::new(None));
-    let bootstrap_peers_slot = Arc::new(Mutex::new(bootstrap_peers));
+        let endpoint_clone = endpoint.clone();
+        let gossip_clone = gossip.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = endpoint_clone.accept().await {
+                let gossip = gossip_clone.clone();
+                tokio::spawn(async move {
+                    if let Ok(connecting) = incoming.accept() {
+                        if let Ok(connection) = connecting.await {
+                            let _ = gossip.handle_connection(connection).await;
+                        }
+                    }
+                });
+            }
+        });
 
-    register_active_node(
-        &device_id,
-        &device_name,
-        node_id,
-        node_addr,
-        keypair.clone(),
-        trust_store.clone(),
-        topic_seed,
-        sender_slot.clone(),
-        gossip.clone(),
-        bootstrap_peers_slot.clone(),
-    );
+        let sender_slot = Arc::new(Mutex::new(None));
+        let bootstrap_peers_slot = Arc::new(Mutex::new(bootstrap_peers));
 
-    // Reconnect Watchdog background task
-    let gossip_watchdog = gossip.clone();
-    let keypair_watchdog = keypair.clone();
-    let trust_store_watchdog = trust_store.clone();
-    let bootstrap_slot_watchdog = bootstrap_peers_slot.clone();
+        register_active_node(
+            &device_id_clone,
+            &device_name_clone,
+            node_id,
+            node_addr,
+            keypair_clone.clone(),
+            trust_store.clone(),
+            topic_seed,
+            sender_slot.clone(),
+            gossip.clone(),
+            bootstrap_peers_slot.clone(),
+        );
 
-    tokio::spawn(async move {
+        let gossip_watchdog = gossip.clone();
+        let keypair_watchdog = keypair_clone.clone();
+        let trust_store_watchdog = trust_store.clone();
+        let bootstrap_slot_watchdog = bootstrap_peers_slot.clone();
+
         let mut backoff_ms = 500u64;
         loop {
             let current_peers = {
@@ -246,7 +254,7 @@ pub async fn start_node_with_key(device_name: String, secret_key_bytes: Option<V
                 }
             }
 
-            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
             backoff_ms = (backoff_ms * 2).min(30_000);
         }
     });
@@ -258,9 +266,10 @@ pub async fn add_peer(peer_id_str: String) -> Result<bool> {
     let clean_str = peer_id_str.trim();
 
     // Extract peerId if JSON string was passed from QR code
-    let target_str = if clean_str.contains('{') {
+    let mut target_str = if clean_str.contains('{') {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(clean_str) {
             val.get("peerId")
+                .or_else(|| val.get("nodeId"))
                 .or_else(|| val.get("deviceId"))
                 .and_then(|v| v.as_str())
                 .unwrap_or(clean_str)
@@ -272,24 +281,39 @@ pub async fn add_peer(peer_id_str: String) -> Result<bool> {
         clean_str.to_string()
     };
 
-    if let Ok(target_node_id) = target_str.parse::<iroh::net::NodeId>() {
-        let nodes = {
-            let map = active_nodes_map().lock().unwrap();
-            map.values().cloned().collect::<Vec<_>>()
-        };
+    // Try to parse as NodeId directly first, then try stripping node_ prefix
+    let candidates: Vec<String> = if target_str.starts_with("node_") {
+        let stripped = target_str[5..].to_string();
+        vec![stripped, target_str.clone()]
+    } else {
+        vec![target_str.clone()]
+    };
 
-        for node in nodes {
-            {
-                let mut peers = node.bootstrap_peers_slot.lock().unwrap();
-                if !peers.contains(&target_node_id) {
-                    peers.push(target_node_id);
+    log::error!("🔵 [flick] Rust add_peer called with input: {}, trying candidates: {:?}", peer_id_str, candidates);
+
+    for candidate in &candidates {
+        if let Ok(target_node_id) = candidate.parse::<iroh::net::NodeId>() {
+            log::error!("✅ [flick] add_peer parsed NodeId: {}", candidate);
+            let nodes = {
+                let map = active_nodes_map().lock().unwrap();
+                map.values().cloned().collect::<Vec<_>>()
+            };
+
+            for node in nodes {
+                {
+                    let mut peers = node.bootstrap_peers_slot.lock().unwrap();
+                    if !peers.contains(&target_node_id) {
+                        peers.push(target_node_id);
+                    }
                 }
+                let topic = FlickGossipNode::create_topic(&node.topic_seed);
+                let _ = node.gossip.join(topic, vec![target_node_id]).await;
             }
-            let topic = FlickGossipNode::create_topic(&node.topic_seed);
-            let _ = node.gossip.join(topic, vec![target_node_id]).await;
+            return Ok(true);
         }
-        return Ok(true);
     }
+
+    log::error!("❌ [flick] add_peer FAILED — none of {:?} is a valid Iroh NodeId. Desktop QR must show real node_id!", candidates);
     Ok(false)
 }
 
