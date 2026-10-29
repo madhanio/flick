@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'screens/main_shell.dart';
 import 'services/bridge_service.dart';
-import 'src/rust/api/bridge.dart/frb_generated.dart';
+import 'src/rust/frb_generated.dart';
 import 'theme/flick_theme.dart';
 
 void main() async {
