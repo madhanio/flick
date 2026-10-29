@@ -30,3 +30,7 @@ Thumbs.db
 *.exe
 
 
+
+push_to_github.bat
+push_scheduled.log
+
