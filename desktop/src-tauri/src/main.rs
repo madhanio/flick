@@ -135,23 +135,27 @@ async fn send_flick_command(
 
     // Broadcast via Rust Core
     let _ = send_flick(content.clone(), device_id, device_name).await;
-
-    // Store in recent flicks
-    {
-        let mut flicks = state.recent_flicks.lock().unwrap();
-        flicks.insert(0, item.clone());
-        if flicks.len() > 50 {
-            flicks.pop();
-        }
-    }
-
-    let _ = app_handle.emit("flick-updated", item.clone());
     Ok(item)
 }
 
 #[tauri::command]
 async fn add_peer_command(code: String, state: State<'_, Arc<AppState>>) -> Result<bool, String> {
-    let res = flick_core::add_peer(code.clone()).await.unwrap_or(false);
+    let peer_id = if code.contains('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&code) {
+            v.get("peerId")
+                .or_else(|| v.get("nodeId"))
+                .or_else(|| v.get("deviceId"))
+                .and_then(|s| s.as_str())
+                .unwrap_or(&code)
+                .to_string()
+        } else {
+            code.clone()
+        }
+    } else {
+        code.clone()
+    };
+
+    let res = flick_core::add_peer(peer_id.clone()).await.unwrap_or(false);
     let name = if code.contains("deviceName") {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&code) {
             v.get("deviceName").and_then(|s| s.as_str()).unwrap_or("Paired Device").to_string()
@@ -162,9 +166,9 @@ async fn add_peer_command(code: String, state: State<'_, Arc<AppState>>) -> Resu
         "Paired Device".to_string()
     };
     let mut devices = state.paired_devices.lock().unwrap();
-    if !devices.iter().any(|d| d.id == code) {
+    if !devices.iter().any(|d| d.id == peer_id) {
         devices.push(PairedDeviceStatus {
-            id: code,
+            id: peer_id,
             name,
             online: true,
             last_seen: Utc::now().timestamp(),
@@ -205,6 +209,16 @@ async fn main() {
                         let app_h = app_handle_incoming.clone();
                         let st_h = state_incoming.clone();
                         set_incoming_handler(move |payload| {
+                            let current_dev_id = {
+                                let lock = st_h.node_info.lock().unwrap();
+                                lock.as_ref().map(|n| n.device_id.clone()).unwrap_or_default()
+                            };
+
+                            // Ignore self-sent messages echoed back from gossip topic
+                            if !payload.from_device_id.is_empty() && payload.from_device_id == current_dev_id {
+                                return;
+                            }
+
                             let item = FlickDesktopItem {
                                 id: format!("flick_{}", Utc::now().timestamp_millis()),
                                 msg_type: payload.msg_type.clone(),

@@ -66,23 +66,30 @@ export const App: React.FC = () => {
     if (isTauri) {
       const { invoke } = (window as any).__TAURI_INTERNALS__;
 
-      let interval: any = null;
+      let nodeInterval: any = null;
+      let devicesInterval: any = null;
+
       const fetchNodeInfo = () => {
         invoke('get_node_info')
           .then((info: NodeInfo | null) => {
             if (info && info.node_id) {
               setNodeInfo(info);
-              if (interval) clearInterval(interval);
+              if (nodeInterval) { clearInterval(nodeInterval); nodeInterval = null; }
             }
           })
           .catch(() => {});
       };
 
-      fetchNodeInfo();
-      interval = setInterval(fetchNodeInfo, 1000);
+      const fetchDevices = () => {
+        invoke('get_paired_devices').then((devices: PairedDevice[]) => setPairedDevices(devices)).catch(() => {});
+        invoke('get_recent_flicks').then((flicks: FlickItem[]) => setRecentFlicks(flicks)).catch(() => {});
+      };
 
-      invoke('get_paired_devices').then((devices: PairedDevice[]) => setPairedDevices(devices)).catch(() => {});
-      invoke('get_recent_flicks').then((flicks: FlickItem[]) => setRecentFlicks(flicks)).catch(() => {});
+      fetchNodeInfo();
+      nodeInterval = setInterval(fetchNodeInfo, 1000);
+
+      fetchDevices();
+      devicesInterval = setInterval(fetchDevices, 2000);
 
       // Listen for updates from backend broadcast
       if ((window as any).__TAURI__?.event) {
@@ -90,15 +97,17 @@ export const App: React.FC = () => {
         listen('flick-updated', (event: any) => {
           setRecentFlicks((prev) => [event.payload, ...prev]);
         });
+        listen('flick-incoming', (event: any) => {
+          setRecentFlicks((prev) => [event.payload, ...prev]);
+        });
       }
 
-      return () => clearInterval(interval);
+      return () => {
+        if (nodeInterval) clearInterval(nodeInterval);
+        if (devicesInterval) clearInterval(devicesInterval);
+      };
     } else {
-      setNodeInfo({
-        node_id: 'node_pc_desktop_39481',
-        device_id: 'dev_pc',
-        device_name: 'Windows PC',
-      });
+      // Dev mode (no Tauri) — do not set fake node_id so QR shows loading
       setPairedDevices([]);
       setRecentFlicks([]);
     }
@@ -224,11 +233,12 @@ export const App: React.FC = () => {
     return `${Math.floor(diff / 3600)}h ago`;
   };
 
-  const myTicketPayload = JSON.stringify({
+  // Only generate QR payload once we have the real Iroh NodeId from backend
+  const myTicketPayload = nodeInfo?.node_id ? JSON.stringify({
     version: 1,
-    peerId: nodeInfo?.node_id || nodeInfo?.device_id || 'dev_pc',
-    deviceId: nodeInfo?.device_id || 'dev_pc',
-    deviceName: nodeInfo?.device_name || 'Windows PC',
+    peerId: nodeInfo.node_id,
+    deviceId: nodeInfo.device_id || 'dev_pc',
+    deviceName: nodeInfo.device_name || 'Windows PC',
   });
 
   return (
@@ -759,8 +769,14 @@ export const App: React.FC = () => {
             {/* Tab 1: QR Code display */}
             {pairTab === 'qr' && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-                <div style={{ padding: '16px', backgroundColor: '#FFFFFF', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
-                  <QRCodeSVG value={myTicketPayload} size={200} />
+                <div style={{ padding: '16px', backgroundColor: '#FFFFFF', borderRadius: '12px', border: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '200px', height: '200px' }}>
+                  {myTicketPayload
+                    ? <QRCodeSVG value={myTicketPayload} size={200} />
+                    : <div style={{ textAlign: 'center', color: '#94A3B8' }}>
+                        <div style={{ fontSize: '28px', marginBottom: '8px' }}>⏳</div>
+                        <div style={{ fontSize: '12px' }}>Starting node…</div>
+                      </div>
+                  }
                 </div>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A' }}>Scan from your Phone App</div>
