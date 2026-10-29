@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../models/flick_item.dart';
+import '../services/bridge_service.dart';
 import '../services/p2p_service.dart';
 import '../theme/flick_theme.dart';
 
@@ -30,13 +32,17 @@ class PairScreen extends StatefulWidget {
 class _PairScreenState extends State<PairScreen> {
   final TextEditingController _codeController = TextEditingController();
 
+  bool get _isNodeReady =>
+      widget.myDeviceId.isNotEmpty &&
+      widget.myDeviceId != 'Initializing...' &&
+      !widget.myDeviceId.startsWith('node_mock');
+
   String get _qrPayload {
     final Map<String, dynamic> ticketObj = {
       'version': 1,
       'peerId': widget.myDeviceId,
       'deviceId': widget.myDeviceId,
       'deviceName': widget.myDeviceName,
-      'createdAt': DateTime.now().millisecondsSinceEpoch,
     };
     return jsonEncode(ticketObj);
   }
@@ -56,25 +62,23 @@ class _PairScreenState extends State<PairScreen> {
         if (json['port'] != null) {
           targetPort = int.tryParse(json['port'].toString()) ?? 8080;
         }
-        targetId = json['peerId']?.toString() ?? code;
+        targetId = json['peerId']?.toString() ?? json['nodeId']?.toString() ?? json['deviceId']?.toString() ?? code;
       } catch (_) {}
     } else if (code.contains('.') || code.contains(':')) {
       targetIp = code.split(':')[0].replaceAll('/', '').trim();
     }
 
     try {
-      final PairedDevice dev;
-      if (targetIp != null && targetIp.isNotEmpty) {
-        dev = MobileP2PService().connectToLocalWifiRelay(targetIp, port: targetPort);
-      } else {
-        dev = await MobileP2PService().connectToPeer(targetId);
+      final bool success = await BridgeService.addPeer(targetId);
+      if (!success) {
+        throw Exception('Failed to reach target node');
       }
-      widget.onAddPair(dev.name, dev.id);
+      widget.onAddPair('Paired Device', targetId);
       _codeController.clear();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ Paired successfully with ${dev.name}!'),
+            content: Text('✅ Paired successfully with $targetId!'),
             backgroundColor: FlickColors.accentPrimary,
             behavior: SnackBarBehavior.floating,
           ),
@@ -84,8 +88,8 @@ class _PairScreenState extends State<PairScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('⚠️ Pairing attempt sent to ${targetIp ?? targetId}'),
-            backgroundColor: FlickColors.accentPrimary,
+            content: Text('❌ Pairing failed. Node could not be reached.'),
+            backgroundColor: Colors.redAccent,
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -160,27 +164,37 @@ class _PairScreenState extends State<PairScreen> {
                           controller.dispose();
                           Navigator.of(sheetContext).pop();
 
-                          try {
-                            final Map<String, dynamic> json = jsonDecode(rawValue);
-                            if (json['ip'] != null && json['ip'].toString().isNotEmpty) {
-                              final String ip = json['ip'].toString();
-                              final int port = int.tryParse(json['port']?.toString() ?? '8080') ?? 8080;
+                          Map<String, dynamic> json = {};
+                          if (rawValue.contains('{')) {
+                            try {
+                              json = jsonDecode(rawValue);
+                            } catch (_) {}
+                          }
 
-                              final dev = MobileP2PService().connectToLocalWifiRelay(ip, port: port);
-                              widget.onAddPair(dev.name, dev.id);
+                          final targetId = json['peerId']?.toString() ?? json['nodeId']?.toString() ?? json['deviceId']?.toString() ?? rawValue;
+                          final deviceName = json['deviceName']?.toString() ?? 'Laptop Browser';
+                          print('⚡ [flick] QR scanned rawValue: $rawValue, extracted targetId: $targetId');
+                          BridgeService.addPeer(targetId);
+                          widget.onAddPair(deviceName, targetId);
 
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('✅ Connecting to laptop at $ip...'),
-                                    backgroundColor: FlickColors.accentPrimary,
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
-                              }
-                              break;
+                          if (json['ip'] != null && json['ip'].toString().isNotEmpty) {
+                            final String ip = json['ip'].toString();
+                            final int port = int.tryParse(json['port']?.toString() ?? '8080') ?? 8080;
+
+                            final dev = MobileP2PService().connectToLocalWifiRelay(ip, port: port);
+                            widget.onAddPair(dev.name, dev.id);
+
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('✅ Connecting to laptop at $ip...'),
+                                  backgroundColor: FlickColors.accentPrimary,
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
                             }
-                          } catch (_) {}
+                            break;
+                          }
 
                           setState(() {
                             _codeController.text = rawValue;
@@ -283,7 +297,7 @@ class _PairScreenState extends State<PairScreen> {
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(color: FlickColors.borderSubtle),
                       ),
-                      child: isInitializing
+                      child: !_isNodeReady
                           ? const SizedBox(
                               width: 180.0,
                               height: 180.0,
@@ -291,12 +305,13 @@ class _PairScreenState extends State<PairScreen> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   CircularProgressIndicator(color: FlickColors.accentPrimary),
-                                  SizedBox(height: 12),
+                                  SizedBox(height: 16),
                                   Text(
-                                    'Generating Token ID...',
+                                    'Connecting to relay...',
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: FlickColors.textMuted,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
                                 ],
@@ -326,11 +341,15 @@ class _PairScreenState extends State<PairScreen> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    SelectableText(
-                      'Local Peer Ticket ID: ${widget.myDeviceId}',
-                      style: FlickTheme.monoTextStyle.copyWith(
-                        fontSize: 12,
-                        color: FlickColors.textMuted,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                      child: SelectableText(
+                        'Local Peer Ticket ID:\n${widget.myDeviceId}',
+                        textAlign: TextAlign.center,
+                        style: FlickTheme.monoTextStyle.copyWith(
+                          fontSize: 11,
+                          color: FlickColors.textMuted,
+                        ),
                       ),
                     ),
                   ],
@@ -423,25 +442,29 @@ class _PairScreenState extends State<PairScreen> {
                           size: 20,
                         ),
                         const SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              dev.name,
-                              style: GoogleFonts.plusJakartaSans(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 14,
-                                color: FlickColors.textPrimary,
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dev.name,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                  color: FlickColors.textPrimary,
+                                ),
                               ),
-                            ),
-                            Text(
-                              dev.id,
-                              style: FlickTheme.monoTextStyle.copyWith(
-                                fontSize: 11,
-                                color: FlickColors.textMuted,
+                              Text(
+                                dev.id,
+                                overflow: TextOverflow.ellipsis,
+                                style: FlickTheme.monoTextStyle.copyWith(
+                                  fontSize: 11,
+                                  color: FlickColors.textMuted,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                         const Spacer(),
                         IconButton(

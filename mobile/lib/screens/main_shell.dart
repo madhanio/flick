@@ -21,35 +21,8 @@ class _MainShellState extends State<MainShell> {
   String myPeerId = BridgeService.nodeId ?? 'Initializing...';
   final String myDeviceName = BridgeService.deviceName;
 
-  final List<PairedDevice> _pairedDevices = [
-    PairedDevice(
-      id: 'dev_macbook_pro',
-      name: 'MacBook Pro 16"',
-      type: 'laptop',
-      isOnline: true,
-      lastSeen: DateTime.now(),
-    ),
-    PairedDevice(
-      id: 'dev_linux_workstation',
-      name: 'Ubuntu Workstation',
-      type: 'laptop',
-      isOnline: false,
-      lastSeen: DateTime.now().subtract(const Duration(minutes: 42)),
-    ),
-  ];
-
-  final List<FlickItem> _recentFlicks = [
-    FlickItem.create(
-      content: 'https://github.com/madhanio/flick',
-      fromDeviceId: 'dev_macbook_pro',
-      fromDeviceName: 'MacBook Pro 16"',
-    ),
-    FlickItem.create(
-      content: 'cargo build --release --target x86_64-pc-windows-msvc',
-      fromDeviceId: 'dev_linux_workstation',
-      fromDeviceName: 'Ubuntu Workstation',
-    ),
-  ];
+  final List<PairedDevice> _pairedDevices = [];
+  final List<FlickItem> _recentFlicks = [];
 
   final List<FlickItem> _incomingQueue = [
     FlickItem.create(
@@ -65,37 +38,15 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
-
-    _initBridge();
-
-    _incomingSub = BridgeService.incomingStream().listen((jsonStr) {
-      if (mounted) {
-        try {
-          final Map<String, dynamic> json = jsonDecode(jsonStr);
-          final item = FlickItem.fromJson(json);
-          debugPrint('[flick] dart received: ${item.preview}');
-          setState(() {
-            _incomingQueue.insert(0, item);
-          });
-        } catch (e) {
-          debugPrint('[flick] Error parsing incoming flick JSON: $e');
-        }
-      }
-    });
+    _setupAfterInit();
   }
 
-  @override
-  void dispose() {
-    _incomingSub?.cancel();
-    super.dispose();
-  }
-
-  void _initBridge() {
+  Future<void> _setupAfterInit() async {
     _updatePeerId();
     Timer.periodic(const Duration(milliseconds: 300), (timer) {
       if (mounted) {
         _updatePeerId();
-        if (myPeerId != 'Initializing...' && !myPeerId.startsWith('node_mock')) {
+        if (myPeerId != 'Initializing...') {
           timer.cancel();
         }
       } else {
@@ -103,13 +54,50 @@ class _MainShellState extends State<MainShell> {
       }
     });
 
-    BridgeService.initialize().then((_) {
+    try {
+      await BridgeService.initialize();
       if (mounted) {
         _updatePeerId();
+        _incomingSub = BridgeService.incomingStream().listen((jsonStr) {
+          if (mounted) {
+            try {
+              final Map<String, dynamic> json = jsonDecode(jsonStr);
+              final item = FlickItem.fromJson(json);
+
+              // Ignore self-sent messages echoed back from topic broadcast
+              if (item.fromDeviceId.isNotEmpty && item.fromDeviceId == BridgeService.deviceId) {
+                return;
+              }
+
+              debugPrint('[flick] dart received remote flick: ${item.preview}');
+              setState(() {
+                _incomingQueue.insert(0, item);
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('⚡ New Flick received from ${item.fromDeviceName}!'),
+                  backgroundColor: FlickColors.accentPrimary,
+                  behavior: SnackBarBehavior.floating,
+                  action: SnackBarAction(
+                    label: 'View',
+                    textColor: Colors.white,
+                    onPressed: () {
+                      setState(() {
+                        _currentIndex = 1;
+                      });
+                    },
+                  ),
+                ),
+              );
+            } catch (e) {
+              debugPrint('[flick] Error parsing incoming flick JSON: $e');
+            }
+          }
+        });
       }
-    }).catchError((e) {
+    } catch (e) {
       debugPrint('[flick] BridgeService.initialize error: $e');
-    });
+    }
   }
 
   void _updatePeerId() {
