@@ -239,7 +239,7 @@ export const App: React.FC = () => {
     peerId: nodeInfo.node_id,
     deviceId: nodeInfo.device_id || 'dev_pc',
     deviceName: nodeInfo.device_name || 'Windows PC',
-  });
+  }) : '';
 
   return (
     <div

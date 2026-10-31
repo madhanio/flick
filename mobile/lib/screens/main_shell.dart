@@ -24,14 +24,7 @@ class _MainShellState extends State<MainShell> {
   final List<PairedDevice> _pairedDevices = [];
   final List<FlickItem> _recentFlicks = [];
 
-  final List<FlickItem> _incomingQueue = [
-    FlickItem.create(
-      content: 'ghp_K91A78z902B1c456209LkpQx719Mno981AaZ',
-      fromDeviceId: 'dev_macbook_pro',
-      fromDeviceName: 'MacBook Pro 16"',
-      isSensitive: true,
-    ),
-  ];
+  final List<FlickItem> _incomingQueue = [];
 
   StreamSubscription<String>? _incomingSub;
 
